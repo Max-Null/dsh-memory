@@ -9,11 +9,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { MemoryEngine } from './engine.ts'
-import type { MemoryHit, MemoryRecord } from './engine.ts'
+import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 
 export { MemoryEngine } from './engine.ts'
 export type {
   MemoryChange,
+  MemoryConfig,
   MemoryFilter,
   MemoryHit,
   MemoryNamespace,
@@ -25,7 +26,7 @@ export { MemoryId } from './engine.ts'
 export { bm25Scores, tokenize } from './bm25.ts'
 
 export const name = 'dsh-memory'
-export const inject = ['storageDomain', 'systemPrompt', 'tools']
+export const inject = ['storage', 'systemPrompt', 'tools']
 
 /** Compact model-facing record; the branded id serializes as its string. */
 interface MemoryToolRecord {
@@ -103,8 +104,8 @@ function present(title: string, kind: 'read' | 'other', rawInput?: unknown): Gen
   return { card: 'generic', title, kind, ...rawInput === undefined ? {} : { rawInput } }
 }
 
-export async function apply(ctx: Context): Promise<void> {
-  await ctx.plugin(MemoryEngine)
+export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> {
+  await ctx.plugin(MemoryEngine, config)
   const memory = ctx.get('memory')
   if (memory === undefined) throw new Error('memory engine failed to register')
 

@@ -1,19 +1,11 @@
 # Example composition. In a real DeepSeek Harness deployment the storage,
-# storage-domain, system-prompt, and tools entries already live in the host's
-# cordis.yml — you add only the final `dsh-memory` entry to your own.
+# system-prompt, and tools entries already live in the host's cordis.yml —
+# you add only the final `dsh-memory` entry to your own. The plugin registers
+# its own storage backends (global + project), so no storage backend entry is
+# required here.
 
 - id: storage
   name: '@deepseek-ai/dsh-storage'
-
-- id: storage-json
-  name: '@deepseek-ai/dsh-storage-json'
-  config:
-    root: './.dsh/storages'
-
-- id: storage-domain
-  name: '@deepseek-ai/dsh-storage-domain'
-  config:
-    backend: json
 
 - id: system-prompt
   name: '@deepseek-ai/dsh-system-prompt'

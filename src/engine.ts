@@ -1,14 +1,18 @@
 /**
- * The memory service (`ctx.memory`): durable plaintext records over
- * `ctx.storage.domain` with BM25 retrieval. A record is always created
- * `suggested` and becomes effective only through `setStatus` — the human gate.
+ * The memory service (`ctx.memory`): durable plaintext records over two
+ * storage roots — `global` in the harness home, `project` in the current
+ * project folder (`.dsh/`), so project memory follows the repository. A record
+ * is always created `suggested` and becomes effective only through `setStatus`.
  */
 
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import { z } from 'zod'
-import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
+import { defineDomain, domainTable, DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
+import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import { bm25Scores } from './bm25.ts'
 
 declare const memoryIdBrand: unique symbol
@@ -83,41 +87,77 @@ const blockSchema = z.object({
   updatedAt: z.number(),
 })
 
-const memorySpec = defineDomain({
-  name: 'memory',
-  version: 1,
-  tables: {
-    blocks: domainTable<string, StoredBlock>(blockSchema),
-  },
-})
+/** Shared table shape; the two domains differ only by name and backend route. */
+function memorySpec(name: string) {
+  return defineDomain({
+    name,
+    version: 1,
+    tables: { blocks: domainTable<string, StoredBlock>(blockSchema) },
+  })
+}
 
 function toRecord(id: string, block: StoredBlock): MemoryRecord {
   return { id: MemoryId(id), ...block }
 }
 
-/** Cross-session plaintext memory over the storage hub's domain form. */
+/** Harness-home root for `global` memories. */
+function globalRoot(): string {
+  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storages')
+}
+
+/** Project-folder root for `project` memories — follows the repository. */
+function projectRoot(): string {
+  return join(process.cwd(), '.dsh', 'storages')
+}
+
+/** Engine configuration: the two storage roots, defaulted to home and project. */
+export interface MemoryConfig {
+  /** Root for `global` memories; defaults to `$DSH_HOME/storages`. */
+  globalRoot?: string
+  /** Root for `project` memories; defaults to `<cwd>/.dsh/storages`. */
+  projectRoot?: string
+}
+
+/**
+ * Cross-session plaintext memory over the storage hub, split by namespace:
+ * `global` lives in the harness home, `project` in the project folder.
+ */
 export class MemoryEngine extends Service {
-  static inject = ['storageDomain']
+  static inject = ['storage']
 
-  private table?: KvTable<string, StoredBlock>
+  private globalTable?: KvTable<string, StoredBlock>
+  private projectTable?: KvTable<string, StoredBlock>
 
-  constructor(ctx: import('@deepseek-ai/cordis').Context) {
+  constructor(ctx: import('@deepseek-ai/cordis').Context, private readonly config: MemoryConfig = {}) {
     super(ctx, 'memory')
   }
 
   protected async [Service.init](): Promise<void> {
-    const domain = await this.ctx.storageDomain.open(memorySpec)
-    this.ctx.effect(() => () => domain.close(), 'memory.domainClose')
-    this.table = domain.table('blocks')
+    const globalBackend = new JsonStorageBackend(this.config.globalRoot ?? globalRoot())
+    const projectBackend = new JsonStorageBackend(this.config.projectRoot ?? projectRoot())
+    this.ctx.storage.backend.register('memory-global', globalBackend)
+    this.ctx.storage.backend.register('memory-project', projectBackend)
+
+    const facility = new DomainFacility(this.ctx, {
+      backend: 'memory-global',
+      routes: { memory_project: 'memory-project' },
+    })
+    const globalDomain = await facility.open(memorySpec('memory'))
+    const projectDomain = await facility.open(memorySpec('memory_project'))
+    this.ctx.effect(() => () => { void facility.closeAll() }, 'memory.domainsClose')
+
+    this.globalTable = globalDomain.table('blocks')
+    this.projectTable = projectDomain.table('blocks')
   }
 
   /** Create one record in `suggested` status — never self-promoting. */
   async remember(input: MemoryWrite): Promise<MemoryRecord> {
-    const table = this.requireTable()
+    const namespace = input.namespace ?? 'global'
+    const table = this.tableFor(namespace)
     const id = randomUUID()
     const now = Date.now()
     const block: StoredBlock = {
-      namespace: input.namespace ?? 'global',
+      namespace,
       status: 'suggested',
       content: input.content,
       keywords: (input.keywords ?? []).map(keyword => keyword.toLowerCase()),
@@ -131,10 +171,9 @@ export class MemoryEngine extends Service {
   }
 
   list(filter?: MemoryFilter): MemoryRecord[] {
-    const records = [...this.requireTable().entries()].map(([id, block]) => toRecord(id, block))
+    const records = this.allRecords(filter?.namespace)
     return records.filter(record =>
-      (filter?.namespace === undefined || record.namespace === filter.namespace)
-      && (filter?.status === undefined || record.status === filter.status))
+      (filter?.status === undefined || record.status === filter.status))
   }
 
   search(query: string, filter?: MemoryFilter): MemoryHit[] {
@@ -148,26 +187,57 @@ export class MemoryEngine extends Service {
   }
 
   async forget(id: MemoryId): Promise<boolean> {
-    const existed = await this.requireTable().delete(id)
-    if (existed) this.ctx.emit('memory/changed', { operation: 'forgotten', id })
-    return existed
+    if (await this.requireTable('global').delete(id)) {
+      this.ctx.emit('memory/changed', { operation: 'forgotten', id })
+      return true
+    }
+    if (await this.requireTable('project').delete(id)) {
+      this.ctx.emit('memory/changed', { operation: 'forgotten', id })
+      return true
+    }
+    return false
   }
 
   async setStatus(id: MemoryId, status: MemoryStatus): Promise<MemoryRecord> {
-    const table = this.requireTable()
-    const block = table.get(id)
-    if (block === undefined) {
-      throw new Error(`cannot set status of unknown memory '${id}'`)
+    const global = this.requireTable('global').get(id)
+    if (global !== undefined) {
+      const updated: StoredBlock = { ...global, status, updatedAt: Date.now() }
+      await this.requireTable('global').put(id, updated)
+      const record = toRecord(id, updated)
+      this.ctx.emit('memory/changed', { operation: 'status', id, status })
+      return record
     }
-    const updated: StoredBlock = { ...block, status, updatedAt: Date.now() }
-    await table.put(id, updated)
-    const record = toRecord(id, updated)
-    this.ctx.emit('memory/changed', { operation: 'status', id, status })
-    return record
+    const project = this.requireTable('project').get(id)
+    if (project !== undefined) {
+      const updated: StoredBlock = { ...project, status, updatedAt: Date.now() }
+      await this.requireTable('project').put(id, updated)
+      const record = toRecord(id, updated)
+      this.ctx.emit('memory/changed', { operation: 'status', id, status })
+      return record
+    }
+    throw new Error(`cannot set status of unknown memory '${id}'`)
   }
 
-  private requireTable(): KvTable<string, StoredBlock> {
-    if (this.table === undefined) throw new Error('memory engine is not started yet')
-    return this.table
+  private allRecords(namespace?: MemoryNamespace): MemoryRecord[] {
+    if (namespace === 'project') return this.recordsOf(this.requireTable('project'))
+    if (namespace === 'global') return this.recordsOf(this.requireTable('global'))
+    return [
+      ...this.recordsOf(this.requireTable('global')),
+      ...this.recordsOf(this.requireTable('project')),
+    ]
+  }
+
+  private recordsOf(table: KvTable<string, StoredBlock>): MemoryRecord[] {
+    return [...table.entries()].map(([id, block]) => toRecord(id, block))
+  }
+
+  private tableFor(namespace: MemoryNamespace): KvTable<string, StoredBlock> {
+    return this.requireTable(namespace)
+  }
+
+  private requireTable(namespace: MemoryNamespace): KvTable<string, StoredBlock> {
+    const table = namespace === 'global' ? this.globalTable : this.projectTable
+    if (table === undefined) throw new Error('memory engine is not started yet')
+    return table
   }
 }

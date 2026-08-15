@@ -15,7 +15,7 @@
 npm install @max-null/dsh-memory
 ```
 
-在你的 `cordis.yml` 加一条（其余 storage / storage-domain / system-prompt / tools 由宿主已有）：
+在你的 `cordis.yml` 加一条（其余 storage / system-prompt / tools 由宿主已有；记忆的存储后端由插件自己注册）：
 
 ```yaml
 - id: memory
@@ -27,6 +27,17 @@ npm install @max-null/dsh-memory
 - **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `setStatus`
 - **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_forget`
 - **注入**：`tool:memory` 指引 section + `memory:recall` 召回 context（`auto` 记忆，带 `[memory:<id>]` 来源标记）
+
+## 两层存储（global / project）
+
+记忆按 `namespace` 分两层物理存储，各落在独立的明文 JSON：
+
+| namespace | 默认位置 | 用途 |
+|---|---|---|
+| `global` | `$DSH_HOME/storages/memory.json` | 跨项目的个人偏好 |
+| `project` | `<cwd>/.dsh/storages/memory_project.json` | 跟随仓库的项目共识，可 git 分享 |
+
+两个根都可用 config 覆盖（`globalRoot` / `projectRoot`）。`memory_list` / `memory_search` 不带 `namespace` 过滤时会同时查两层。
 
 ## 使用流程（人工确认闸门）
 
@@ -44,7 +55,7 @@ memory_forget     →  随时删除
 
 向量检索的记忆本体是一串不可读的数字，过期信息会成为**无法观测、无法修复的静默暗礁**；BM25 + 明文让每一次召回都可解释、每一条记忆都可见可删。语义（向量）检索留作 v2 的可选项，且以"可观测 + 可修复"为门槛，而非时间表。
 
-明文还有一层**跟随仓库分享**的好处：把 storage-json 后端的 `root` 指向项目目录（例如 `./.dsh/storages`），记忆就落在仓库里的明文 `memory.json` 中——可以 `git` 提交、diff 审查、随仓库分享给所有协作者。团队的共识（"本项目统一用 Vue3 `<script setup>`"）能沉淀进仓库，而不是散落在每个人的本地 `$DSH_HOME` 里。FTS5 的 SQLite 二进制、或向量的数字串，都无法这样"跟着仓库走"。
+明文还有一层**跟随仓库分享**的好处：`project` 命名空间的记忆落在项目文件夹内（`<cwd>/.dsh/storages/memory_project.json`），随 `git` 提交、分享给所有协作者；`global` 命名空间的记忆留在本地 `$DSH_HOME`。团队的共识（"本项目统一用 Vue3 `<script setup>`"）能沉淀进仓库，而不是散落在每个人的本地。FTS5 的 SQLite 二进制、向量的数字串，都无法这样"跟着仓库走"。
 
 ## 开发
 
@@ -58,4 +69,4 @@ node scripts/verify-loader.mjs   # 用 Loader 端到端验证插件可加载
 
 ## 依赖（peerDependencies，由宿主提供）
 
-`@deepseek-ai/cordis`、`@deepseek-ai/dsh-storage-domain`、`@deepseek-ai/dsh-system-prompt`、`@deepseek-ai/dsh-tools`
+`@deepseek-ai/cordis`、`@deepseek-ai/dsh-storage`、`@deepseek-ai/dsh-storage-domain`、`@deepseek-ai/dsh-storage-json`、`@deepseek-ai/dsh-system-prompt`、`@deepseek-ai/dsh-tools`

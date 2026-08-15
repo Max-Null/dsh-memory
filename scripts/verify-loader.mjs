@@ -6,21 +6,23 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-
 const ctx = new Context()
 await ctx.plugin(Loader)
 
-const root = mkdtempSync(join(tmpdir(), 'dsh-memory-verify-'))
+const globalRoot = mkdtempSync(join(tmpdir(), 'dsh-memory-global-'))
+const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-memory-project-'))
 
 // Published DSH plugins, resolved by package name (as `cordis.yml` does).
 await ctx.loader.create({ id: 'storage', name: '@deepseek-ai/dsh-storage' })
-await ctx.loader.create({ id: 'storage-json', name: '@deepseek-ai/dsh-storage-json', config: { root } })
-await ctx.loader.create({ id: 'storage-domain', name: '@deepseek-ai/dsh-storage-domain', config: { backend: 'json' } })
 await ctx.loader.create({ id: 'system-prompt', name: '@deepseek-ai/dsh-system-prompt' })
 await ctx.loader.create({ id: 'tools', name: '@deepseek-ai/dsh-tools' })
 
 // The plugin under test, by file URL (a published consumer uses its package name).
-await ctx.loader.create({ id: 'memory', name: new URL('../dist/index.js', import.meta.url).href })
+await ctx.loader.create({
+  id: 'memory',
+  name: new URL('../dist/index.js', import.meta.url).href,
+  config: { globalRoot, projectRoot },
+})
 
 await ctx.loader.await()
 
@@ -28,7 +30,7 @@ const memory = ctx.get('memory')
 if (!memory) throw new Error('memory engine not registered via the loader')
 
 const record = await memory.remember({ content: 'loaded via cordis.yml loader', keywords: ['verify'] })
-console.log('remembered:', record.status, '|', record.content)
+console.log('remembered:', record.status, '|', record.namespace, '|', record.content)
 
 const tools = ['memory_save', 'memory_list', 'memory_search', 'memory_forget'].map(n => ctx.tools.get(n)?.name)
 console.log('tools:', tools.join(', '))
