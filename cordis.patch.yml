@@ -1,0 +1,6 @@
+# dsh-memory bundle patch: one insert over the profile root.
+# `storage`, `system-prompt`, and `tools` already live in the host (dsh-base);
+# this adds only the memory plugin, which registers its own storage backends.
+- insert:
+    - id: memory
+      name: '@max-null/dsh-memory'
