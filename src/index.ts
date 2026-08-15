@@ -199,4 +199,20 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     },
     presentCall: args => present('Forget memory', 'other', args.id),
   }))
+
+  ctx.tools.register(defineTool({
+    name: 'memory_confirm',
+    description: 'Confirm a suggested memory so it becomes effective (`auto`). Only call this when the human explicitly asks to confirm a memory; never self-promote a suggestion.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Exact memory id from memory_list.' },
+    },
+    output: {
+      schema: RECORD_SCHEMA,
+      render: (_args, value) => renderJson(value),
+    },
+    execute(args, _exec) {
+      return memory.setStatus(args.id as never, 'auto').then(recordValue)
+    },
+    presentCall: args => present('Confirm memory', 'other', args.id),
+  }))
 }

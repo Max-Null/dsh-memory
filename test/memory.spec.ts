@@ -25,7 +25,7 @@ describe('dsh-memory plugin', () => {
     const { ctx, fiber } = await setup()
 
     expect(ctx.memory.list()).toEqual([])
-    for (const name of ['memory_save', 'memory_list', 'memory_search', 'memory_forget']) {
+    for (const name of ['memory_save', 'memory_list', 'memory_search', 'memory_forget', 'memory_confirm']) {
       expect(ctx.tools.get(name)?.name).toBe(name)
     }
     const assembly = await ctx.systemPrompt.assemble()
@@ -70,5 +70,18 @@ describe('dsh-memory plugin', () => {
     expect(await ctx.memory.forget(record.id)).toBe(true)
     expect(await ctx.memory.forget(record.id)).toBe(false)
     expect(ctx.memory.list()).toEqual([])
+  })
+
+  it('confirms a suggested memory through memory_confirm', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'to confirm' })
+
+    const tool = ctx.tools.get('memory_confirm')
+    expect(tool?.presentCall?.({ id: String(record.id) })).toEqual({
+      card: 'generic', title: 'Confirm memory', kind: 'other', rawInput: String(record.id),
+    })
+
+    await tool?.execute?.({ id: String(record.id) }, {} as never)
+    expect(ctx.memory.list()[0]?.status).toBe('auto')
   })
 })
