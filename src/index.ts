@@ -10,6 +10,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { MemoryEngine } from './engine.ts'
 import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
+import { MemoryGateway } from './remote.ts'
 
 export { MemoryEngine } from './engine.ts'
 export type {
@@ -106,6 +107,7 @@ function present(title: string, kind: 'read' | 'other', rawInput?: unknown): Gen
 
 export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> {
   await ctx.plugin(MemoryEngine, config)
+  await ctx.plugin(MemoryGateway)
   const memory = ctx.get('memory')
   if (memory === undefined) throw new Error('memory engine failed to register')
 
