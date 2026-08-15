@@ -22,4 +22,4 @@
   name: '@deepseek-ai/dsh-tools'
 
 - id: memory
-  name: 'dsh-memory'
+  name: '@max-null/dsh-memory'

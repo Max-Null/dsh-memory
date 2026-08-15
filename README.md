@@ -12,14 +12,14 @@
 ## 用法
 
 ```bash
-npm install dsh-memory
+npm install @max-null/dsh-memory
 ```
 
 在你的 `cordis.yml` 加一条（其余 storage / storage-domain / system-prompt / tools 由宿主已有）：
 
 ```yaml
 - id: memory
-  name: 'dsh-memory'
+  name: '@max-null/dsh-memory'
 ```
 
 ## 提供的服务与工具
@@ -27,6 +27,22 @@ npm install dsh-memory
 - **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `setStatus`
 - **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_forget`
 - **注入**：`tool:memory` 指引 section + `memory:recall` 召回 context（`auto` 记忆，带 `[memory:<id>]` 来源标记）
+
+## 使用流程（人工确认闸门）
+
+```
+模型 memory_save  →  status: suggested（只是建议，未生效）
+人工 setStatus    →  status: auto（生效，自动进入每轮的 recall context）
+                    status: suggest（参考，不自动注入）
+memory_search     →  随时按关键词召回任意状态的记忆
+memory_forget     →  随时删除
+```
+
+模型**永远不能自我提升**一条记忆——`memory_save` 只写 `suggested`，只有人（或未来的 v2 自检）通过 `setStatus` 才能让它生效。这保证了记忆不是黑盒：人随时能看、能改、能删。
+
+## 为什么明文 + BM25，而不是向量检索
+
+向量检索的记忆本体是一串不可读的数字，过期信息会成为**无法观测、无法修复的静默暗礁**；BM25 + 明文让每一次召回都可解释、每一条记忆都可见可删。语义（向量）检索留作 v2 的可选项，且以"可观测 + 可修复"为门槛，而非时间表。
 
 ## 开发
 
