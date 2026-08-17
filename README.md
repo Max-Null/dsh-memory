@@ -56,6 +56,12 @@ memory_forget        →  随时删除
 
 明文还有一层**跟随仓库分享**的好处：`project` 命名空间的记忆落在项目文件夹内（`<cwd>/.dsh/storages/memory_project.json`），随 `git` 提交、分享给所有协作者；`global` 命名空间的记忆留在本地 `$DSH_HOME`。团队的共识（"本项目统一用 Vue3 `<script setup>`"）能沉淀进仓库，而不是散落在每个人的本地。FTS5 的 SQLite 二进制、向量的数字串，都无法这样"跟着仓库走"。
 
+## SSID 系列
+
+本插件属于 **`@max-null/*` 插件系列**——这一系列共同构成 **[SSID（思灵 · Seek Soul in Darkness）](https://github.com/Max-Null/seek-soul-in-darkness)** 桌面体验。SSID 是整合它们的盒：`dsh-plugin-center` · `dsh-memory` · `dsh-chinese-thinking` · `dsh-guardian` · `dsh-habit`。
+
+This plugin belongs to the **`@max-null/*` family** — a set of plugins that together form the **[SSID (思灵 · Seek Soul in Darkness)](https://github.com/Max-Null/seek-soul-in-darkness)** desktop experience.
+
 ## 开发
 
 ```bash
