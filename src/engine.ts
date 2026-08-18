@@ -127,12 +127,19 @@ export class MemoryEngine extends Service {
 
   private globalTable?: KvTable<string, StoredBlock>
   private projectTable?: KvTable<string, StoredBlock>
+  private facility?: DomainFacility
 
   constructor(ctx: import('@deepseek-ai/cordis').Context, private readonly config: MemoryConfig = {}) {
     super(ctx, 'memory')
   }
 
   protected async [Service.init](): Promise<void> {
+    await this.openDomains()
+    this.ctx.effect(() => () => { void this.facility?.closeAll() }, 'memory.domainsClose')
+  }
+
+  /** 打开两个存储域（init 与 reload 共用）。 */
+  private async openDomains(): Promise<void> {
     const globalBackend = new JsonStorageBackend(this.config.globalRoot ?? globalRoot())
     const projectBackend = new JsonStorageBackend(this.config.projectRoot ?? projectRoot())
     this.ctx.storage.backend.register('memory-global', globalBackend)
@@ -144,10 +151,20 @@ export class MemoryEngine extends Service {
     })
     const globalDomain = await facility.open(memorySpec('memory'))
     const projectDomain = await facility.open(memorySpec('memory_project'))
-    this.ctx.effect(() => () => { void facility.closeAll() }, 'memory.domainsClose')
+    this.facility = facility
 
     this.globalTable = globalDomain.table('blocks')
     this.projectTable = projectDomain.table('blocks')
+  }
+
+  /**
+   * 强制重载存储：关闭两域后重开，放弃内存缓存重读文件。
+   * 供外部编辑记忆文件后刷新（JsonStorageBackend 打开时加载一次，
+   * 无 watch——2026-08-19 用户实测面板不感知外部编辑）。
+   */
+  async reload(): Promise<void> {
+    await this.facility?.closeAll()
+    await this.openDomains()
   }
 
   /** Create one record in `suggested` status — never self-promoting. */
