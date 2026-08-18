@@ -134,17 +134,18 @@ export class MemoryEngine extends Service {
   }
 
   protected async [Service.init](): Promise<void> {
-    await this.openDomains()
-    this.ctx.effect(() => () => { void this.facility?.closeAll() }, 'memory.domainsClose')
-  }
-
-  /** 打开两个存储域（init 与 reload 共用）。 */
-  private async openDomains(): Promise<void> {
+    // backend 只注册一次：registry 对重名注册抛 duplicate-backend
+    // （storage/tests/registry.spec 实测），reload 不得重复注册。
     const globalBackend = new JsonStorageBackend(this.config.globalRoot ?? globalRoot())
     const projectBackend = new JsonStorageBackend(this.config.projectRoot ?? projectRoot())
     this.ctx.storage.backend.register('memory-global', globalBackend)
     this.ctx.storage.backend.register('memory-project', projectBackend)
+    await this.openFacility()
+    this.ctx.effect(() => () => { void this.facility?.closeAll() }, 'memory.domainsClose')
+  }
 
+  /** 打开存储域（init 与 reload 共用；backend 复用已注册实例）。 */
+  private async openFacility(): Promise<void> {
     const facility = new DomainFacility(this.ctx, {
       backend: 'memory-global',
       routes: { memory_project: 'memory-project' },
@@ -158,13 +159,13 @@ export class MemoryEngine extends Service {
   }
 
   /**
-   * 强制重载存储：关闭两域后重开，放弃内存缓存重读文件。
-   * 供外部编辑记忆文件后刷新（JsonStorageBackend 打开时加载一次，
-   * 无 watch——2026-08-19 用户实测面板不感知外部编辑）。
+   * 强制重载存储：关闭两域后重开（unit 释放后 backend 重读文件），
+   * 放弃内存缓存。供外部编辑记忆文件后刷新（JsonStorageBackend 打开时
+   * 加载一次，无 watch——2026-08-19 用户实测面板不感知外部编辑）。
    */
   async reload(): Promise<void> {
     await this.facility?.closeAll()
-    await this.openDomains()
+    await this.openFacility()
   }
 
   /** Create one record in `suggested` status — never self-promoting. */

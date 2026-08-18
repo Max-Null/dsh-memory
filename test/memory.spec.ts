@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -83,5 +83,28 @@ describe('dsh-memory plugin', () => {
 
     await tool?.execute?.({ id: String(record.id) }, {} as never)
     expect(ctx.memory.list()[0]?.status).toBe('auto')
+  })
+
+  it('reload picks up externally edited storage files (2026-08-19 regression)', async () => {
+    const { ctx, globalRoot } = await setup()
+    await ctx.memory.remember({ content: 'in-process record' })
+    expect(ctx.memory.list().map(r => r.content)).toEqual(['in-process record'])
+
+    // 外部应用直接编辑文件：往 memory.json 的 blocks 表塞一条新记录。
+    const file = join(globalRoot, 'memory.json')
+    const unit = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, unknown> }
+    }
+    unit.tables.blocks['external-id'] = {
+      namespace: 'global', status: 'auto', content: 'externally edited', keywords: [], createdAt: 1, updatedAt: 1,
+    }
+    writeFileSync(file, JSON.stringify(unit))
+
+    // reload 前：内存缓存仍是旧数据。
+    expect(ctx.memory.list().map(r => r.content)).toEqual(['in-process record'])
+
+    await ctx.memory.reload()
+    expect(ctx.memory.list().map(r => r.content).sort())
+      .toEqual(['externally edited', 'in-process record'])
   })
 })
