@@ -168,6 +168,8 @@ export class MemoryEngine extends Service {
   /** project 域按工作区 cwd 懒打开 + 缓存（多会话并发各工作区独立）。 */
   private projectTables = new Map<string, KvTable<string, StoredBlock>>()
   private projectFacilities = new Map<string, DomainFacility>()
+  /** backend 只注册一次（registry 重名抛 duplicate；reload 清缓存后不得重复注册）。 */
+  private registeredProjectBackends = new Set<string>()
   private facility?: DomainFacility
 
   constructor(ctx: import('@deepseek-ai/cordis').Context, private readonly config: MemoryConfig = {}) {
@@ -217,8 +219,11 @@ export class MemoryEngine extends Service {
     const cached = this.projectTables.get(key)
     if (cached !== undefined) return cached
     const backendName = this.projectBackendName(key)
-    const backend = new JsonStorageBackend(this.projectRootFor(key))
-    this.ctx.storage.backend.register(backendName, backend)
+    if (!this.registeredProjectBackends.has(backendName)) {
+      const backend = new JsonStorageBackend(this.projectRootFor(key))
+      this.ctx.storage.backend.register(backendName, backend)
+      this.registeredProjectBackends.add(backendName)
+    }
     const facility = new DomainFacility(this.ctx, { backend: backendName, routes: {} })
     const domain = await facility.open(memorySpec(`memory_project_${backendName}`))
     const table = domain.table('blocks')

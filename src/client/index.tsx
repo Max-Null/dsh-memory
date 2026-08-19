@@ -249,7 +249,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
     try {
       setRecords(await memoryApi.list({}, props.cwd))
     } catch {
-      setRecords([])
+      // 失败保留旧列表（2026-08-19 用户实测：失败清空无后续）
     }
   }
   // 强制重读存储文件（JsonStorageBackend 无 watch——外部编辑后必须 reload）

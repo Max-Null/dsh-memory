@@ -249,7 +249,6 @@ function MemoryView(props) {
     try {
       setRecords(await memoryApi.list({}, props.cwd));
     } catch {
-      setRecords([]);
     }
   };
   const refreshFromDisk = async () => {

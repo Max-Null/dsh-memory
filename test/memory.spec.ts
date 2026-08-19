@@ -245,6 +245,23 @@ describe('dsh-memory plugin', () => {
     expect((await ctx.memory.list())[0]?.content).toBe('updated')
   })
 
+  it('0.3.7: reload keeps project tables reachable (backend not re-registered)', async () => {
+    const { ctx, workspaceA } = await setup()
+    await ctx.memory.remember({ content: 'ws before reload', namespace: 'project' }, workspaceA)
+    expect((await ctx.memory.list({ namespace: 'project' }, workspaceA)).map(r => r.content))
+      .toEqual(['ws before reload'])
+
+    await ctx.memory.reload()
+
+    // reload 后 project 表仍可读（backend 只注册一次，重开不重复注册）
+    expect((await ctx.memory.list({ namespace: 'project' }, workspaceA)).map(r => r.content))
+      .toEqual(['ws before reload'])
+    // 且仍可写
+    await ctx.memory.remember({ content: 'ws after reload', namespace: 'project' }, workspaceA)
+    expect((await ctx.memory.list({ namespace: 'project' }, workspaceA)).map(r => r.content).sort())
+      .toEqual(['ws after reload', 'ws before reload'])
+  })
+
   it('reload picks up externally edited storage files (2026-08-19 regression)', async () => {
     const { ctx, globalRoot } = await setup()
     await ctx.memory.remember({ content: 'in-process record' })
