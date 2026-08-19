@@ -129,12 +129,20 @@ const SELF_DESCRIPTION =
   + '使用建议：相关历史上下文先 memory_search 检索再引用；新习惯/约定用 memory_save 写入（落在待审核）。'
   + '（中/英文同义：This environment has a cross-session memory service; write suggestions via memory_save, retrieve via memory_search, and expect human review before approved.)'
 
+// 0.3.4：注入只注入 global 的 approved+injected（systemPrompt context 是
+// 同步回调、无会话 cwd 可及）；工作区（project）记忆按会话 cwd 路由，靠
+// memory_search / 面板访问。
 function recallText(memory: MemoryEngine): string {
-  // 0.3.0：只注入「已审核 + 常驻开关打开」的记忆（二维模型）
-  const auto = memory.list({ status: 'approved', injected: true })
+  const auto = memory.recallRecords()
   if (auto.length === 0) return ''
   const lines = auto.map(record => `- [memory:${String(record.id)}] ${record.content}`)
   return `Remembered preferences and conventions — apply these:\n${lines.join('\n')}`
+}
+
+/** 从工具执行上下文取调用会话的工作区 cwd（0.3.4 工作区路由）。 */
+function execProjectCwd(exec: unknown): string | undefined {
+  return (exec as { agent?: { session?: { header?: { cwd?: string } } } } | undefined)
+    ?.agent?.session?.header?.cwd
 }
 
 function renderJson(value: unknown): { type: 'text'; text: string }[] {
@@ -183,12 +191,12 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       schema: RECORD_SCHEMA,
       render: (_args, value) => renderJson(value),
     },
-    execute(args, _exec) {
+    execute(args, exec) {
       return memory.remember({
         content: args.content,
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
-      }).then(recordValue)
+      }, execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Save memory', 'other', args.content),
   }))
@@ -205,12 +213,12 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       schema: { type: 'array', items: RECORD_SCHEMA },
       render: (_args, value) => renderJson(value),
     },
-    execute(args, _exec) {
-      return Promise.resolve(memory.list({
+    execute(args, exec) {
+      return memory.list({
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.injected === undefined ? {} : { injected: args.injected },
-      }).map(recordValue))
+      }, execProjectCwd(exec)).then(records => records.map(recordValue))
     },
     presentCall: () => present('List memories', 'read'),
   }))
@@ -227,11 +235,11 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       schema: { type: 'array', items: HIT_SCHEMA },
       render: (_args, value) => renderJson(value),
     },
-    execute(args, _exec) {
-      return Promise.resolve(memory.search(args.query, {
+    execute(args, exec) {
+      return memory.search(args.query, {
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
-      }).map(hitValue))
+      }, execProjectCwd(exec)).then(hits => hits.map(hitValue))
     },
     presentCall: args => present('Search memory', 'read', args.query),
   }))
@@ -246,8 +254,8 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       schema: { type: 'object', additionalProperties: false, properties: { deleted: { type: 'boolean', required: true } } },
       render: (_args, value) => renderJson(value),
     },
-    execute(args, _exec) {
-      return memory.forget(args.id as never).then(deleted => ({ deleted }))
+    execute(args, exec) {
+      return memory.forget(args.id as never, execProjectCwd(exec)).then(deleted => ({ deleted }))
     },
     presentCall: args => present('Forget memory', 'other', args.id),
   }))
@@ -264,11 +272,11 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       schema: RECORD_SCHEMA,
       render: (_args, value) => renderJson(value),
     },
-    execute(args, _exec) {
+    execute(args, exec) {
       return memory.update(args.id as never, {
         ...args.content === undefined ? {} : { content: args.content },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
-      }).then(recordValue)
+      }, execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Update memory', 'other', args.id),
   }))
@@ -283,8 +291,8 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       schema: RECORD_SCHEMA,
       render: (_args, value) => renderJson(value),
     },
-    execute(args, _exec) {
-      return memory.setStatus(args.id as never, 'approved').then(recordValue)
+    execute(args, exec) {
+      return memory.setStatus(args.id as never, 'approved', execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Confirm memory', 'other', args.id),
   }))

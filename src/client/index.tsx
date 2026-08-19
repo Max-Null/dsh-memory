@@ -27,7 +27,8 @@ const STRINGS = {
     approveFirst: '审核通过后可常驻注入',
     allNamespaces: '全部',
     nsGlobal: '全局',
-    nsProject: '项目',
+    nsWorkspace: '工作区',
+    noWorkspace: '未选择工作区',
     organizeMemory: '整理记忆',
     confirmAll: '全部确认',
     suggested: '待审核',
@@ -47,7 +48,8 @@ const STRINGS = {
     approveFirst: 'Approve to enable injection',
     allNamespaces: 'All',
     nsGlobal: 'Global',
-    nsProject: 'Project',
+    nsWorkspace: 'Workspace',
+    noWorkspace: 'No workspace selected',
     organizeMemory: 'Organize memory',
     confirmAll: 'Approve all',
     suggested: 'Suggested',
@@ -99,14 +101,15 @@ const ssid = {
 } as const
 
 // ---- remote.memory surface (Typert gateway: list/search/confirm/forget/setInjected/reload) ----
+// 0.3.4：所有方法带 cwd（当前会话工作区），engine 按 cwd 路由 project 记忆。
 interface RemoteMemory {
-  list(filter?: { namespace?: string, status?: string, injected?: boolean }): Promise<Array<{
+  list(filter?: { namespace?: string, status?: string, injected?: boolean }, cwd?: string): Promise<Array<{
     id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[]
   }>>
-  reload(): Promise<Array<Record<string, unknown>>>
-  confirm(id: string): Promise<Record<string, unknown>>
-  forget(id: string): Promise<boolean>
-  setInjected(id: string, injected: boolean): Promise<Record<string, unknown>>
+  reload(cwd?: string): Promise<Array<Record<string, unknown>>>
+  confirm(id: string, cwd?: string): Promise<Record<string, unknown>>
+  forget(id: string, cwd?: string): Promise<boolean>
+  setInjected(id: string, injected: boolean, cwd?: string): Promise<Record<string, unknown>>
 }
 
 // 预填指令（0.3.1+）：过时内容用 memory_update 修正；工具面自查法。
@@ -115,6 +118,8 @@ const ORGANIZE_PROMPT = '请整理我的记忆库：用 memory_list 查看全部
 interface MemoryViewProps {
   visible: boolean
   remote: RemoteMemory
+  /** 当前会话工作区 cwd（侧栏 scope.cwd / 设置页 sessions 快照）；无则工作区记忆为空。 */
+  cwd?: string
   ctx: {
     get?: (name: string) => unknown
   }
@@ -129,7 +134,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const [organizing, setOrganizing] = useState(false)
   const reload = async (): Promise<void> => {
     try {
-      setRecords(await props.remote.list())
+      setRecords(await props.remote.list({}, props.cwd))
     } catch {
       setRecords([])
     }
@@ -138,7 +143,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const refreshFromDisk = async (): Promise<void> => {
     setRefreshing(true)
     try {
-      const value = await props.remote.reload()
+      const value = await props.remote.reload(props.cwd)
       setRecords(value as Awaited<ReturnType<RemoteMemory['list']>>)
     } catch {
       await reload()
@@ -151,7 +156,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const toggleInjected = async (record: Awaited<ReturnType<RemoteMemory['list']>>[number]): Promise<void> => {
     if (record.status !== 'approved') return
     try {
-      await props.remote.setInjected(record.id, !record.injected)
+      await props.remote.setInjected(record.id, !record.injected, props.cwd)
     } catch {
       /* 失败保持原状态 */
     }
@@ -161,7 +166,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const confirmAll = async (): Promise<void> => {
     const pending = records.filter(record => record.status === 'suggested')
     if (pending.length === 0) return
-    await Promise.all(pending.map(record => props.remote.confirm(record.id).catch(() => null)))
+    await Promise.all(pending.map(record => props.remote.confirm(record.id, props.cwd).catch(() => null)))
     await reload()
   }
 
@@ -208,7 +213,9 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   }
 
   const q = query.trim().toLowerCase()
-  const byNs = namespace === null ? records : records.filter(record => record.namespace === namespace)
+  const byNs = namespace === null ? records
+    : namespace === 'workspace' ? records.filter(record => record.namespace === 'project')
+      : records.filter(record => record.namespace === 'global')
   const filtered = byNs.filter(record => q === '' || record.content.toLowerCase().includes(q))
   const groups: Array<{ key: string, label: string, items: typeof filtered }> = [
     { key: 'pending', label: t('groupPending'), items: filtered.filter(record => record.status === 'suggested') },
@@ -245,60 +252,87 @@ function MemoryView(props: MemoryViewProps): ReactNode {
       }, refreshing ? '…' : '↻'),
     ),
     createElement('div', { style: { display: 'flex', gap: 4 } },
-      ([null, 'global', 'project'] as Array<string | null>).map(ns => createElement('button', {
+      ([null, 'global', 'workspace'] as Array<string | null>).map(ns => createElement('button', {
         key: ns ?? 'all',
         onClick: () => { setNamespace(ns) },
         style: { flex: 1, ...ssid.btn, ...(namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
-      }, ns === null ? t('allNamespaces') : ns === 'global' ? t('nsGlobal') : t('nsProject'))),
+      }, ns === null ? t('allNamespaces') : ns === 'global' ? t('nsGlobal') : t('nsWorkspace'))),
     ),
-    groups.length === 0
-      ? createElement('div', { style: ssid.empty }, t('empty'))
-      : groups.map(group => createElement('div', { key: group.key, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        createElement('div', { style: ssid.title },
-          createElement('span', null, group.label),
-          createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-            group.key === 'pending' && group.items.length > 0
-              ? createElement('button', {
+    // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
+    namespace === 'workspace' && (props.cwd === undefined || props.cwd === '')
+      ? createElement('div', { style: ssid.empty }, t('noWorkspace'))
+      : groups.length === 0
+        ? createElement('div', { style: ssid.empty }, t('empty'))
+        : groups.map(group => createElement('div', { key: group.key, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          createElement('div', { style: ssid.title },
+            createElement('span', null, group.label),
+            createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+              group.key === 'pending' && group.items.length > 0
+                ? createElement('button', {
+                  type: 'button',
+                  title: t('confirmAll'),
+                  onClick: () => { void confirmAll() },
+                  style: { ...ssid.btn, padding: '1px 8px', fontSize: 10.5 },
+                }, t('confirmAll'))
+                : null,
+              createElement('span', null, `${group.items.length}`),
+            ),
+          ),
+          group.items.map(record => createElement('div', { key: record.id, style: ssid.card },
+            createElement('div', { style: ssid.text }, record.content),
+            createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
+              `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}`),
+            createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },
+              createElement('button', {
                 type: 'button',
-                title: t('confirmAll'),
-                onClick: () => { void confirmAll() },
-                style: { ...ssid.btn, padding: '1px 8px', fontSize: 10.5 },
-              }, t('confirmAll'))
-              : null,
-            createElement('span', null, `${group.items.length}`),
-          ),
-        ),
-        group.items.map(record => createElement('div', { key: record.id, style: ssid.card },
-          createElement('div', { style: ssid.text }, record.content),
-          createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
-            `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}`),
-          createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },
-            createElement('button', {
-              type: 'button',
-              title: record.status === 'approved' ? t('injectSwitch') : t('approveFirst'),
-              disabled: record.status !== 'approved',
-              onClick: () => { void toggleInjected(record) },
-              style: {
-                ...ssid.btn,
-                ...(record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {}),
-                opacity: record.status !== 'approved' ? 0.4 : 1,
-                cursor: record.status !== 'approved' ? 'not-allowed' : 'pointer',
-              },
-            }, record.injected ? `✓ ${t('injectSwitch')}` : t('injectSwitch')),
-            record.status === 'suggested'
-              ? createElement('button', {
+                title: record.status === 'approved' ? t('injectSwitch') : t('approveFirst'),
+                disabled: record.status !== 'approved',
+                onClick: () => { void toggleInjected(record) },
+                style: {
+                  ...ssid.btn,
+                  ...(record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {}),
+                  opacity: record.status !== 'approved' ? 0.4 : 1,
+                  cursor: record.status !== 'approved' ? 'not-allowed' : 'pointer',
+                },
+              }, record.injected ? `✓ ${t('injectSwitch')}` : t('injectSwitch')),
+              record.status === 'suggested'
+                ? createElement('button', {
+                  style: ssid.btn,
+                  onClick: () => { void props.remote.confirm(record.id, props.cwd).then(() => reload()) },
+                }, t('confirm'))
+                : null,
+              createElement('button', {
                 style: ssid.btn,
-                onClick: () => { void props.remote.confirm(record.id).then(() => reload()) },
-              }, t('confirm'))
-              : null,
-            createElement('button', {
-              style: ssid.btn,
-              onClick: () => { void props.remote.forget(record.id).then(() => reload()) },
-            }, t('forget')),
-          ),
+                onClick: () => { void props.remote.forget(record.id, props.cwd).then(() => reload()) },
+              }, t('forget')),
+            ),
+          )),
         )),
-      )),
   )
+}
+
+/** 从 sessions 服务快照取当前会话的工作区 cwd（设置页等无 scope 上下文处）。 */
+function currentSessionCwd(ctx: LocaleAwareContext): string | undefined {
+  try {
+    const sessions = ctx.get?.('sessions') as {
+      list?: { getSnapshot?(): { byId?: Record<string, { cwd?: string }>, current?: string } }
+    } | undefined
+    const snapshot = sessions?.list?.getSnapshot?.()
+    if (snapshot?.current === undefined) return undefined
+    return snapshot.byId?.[snapshot.current]?.cwd
+  } catch {
+    return undefined
+  }
+}
+
+/** 设置页包装：渲染时读当前会话 cwd（切换会话后重渲染即跟随）。 */
+function SettingsMemoryView(props: { remote: RemoteMemory, ctx: LocaleAwareContext }): ReactNode {
+  return createElement(MemoryView, {
+    visible: true,
+    remote: props.remote,
+    ctx: props.ctx,
+    cwd: currentSessionCwd(props.ctx),
+  })
 }
 
 /** Locale service's minimal surface (optional read + change event). */
@@ -335,10 +369,9 @@ export function apply(ctx: unknown): void {
       order: 60,
       label: () => STRINGS[localeId].tabMemory,
       inject: () => ({}),
-    }, () => createElement(MemoryView, {
-      visible: true,
+    }, () => createElement(SettingsMemoryView, {
       remote: remoteMemory,
-      ctx: ctx as MemoryViewProps['ctx'],
+      ctx: ctx as LocaleAwareContext,
     })))
   }
 
@@ -357,9 +390,11 @@ export function apply(ctx: unknown): void {
       title: () => STRINGS[localeId].tabMemory,
       order: 60,
       single: true,
-      component: ({ visible }: { visible: boolean }) => createElement(MemoryView, {
+      component: ({ visible, scope }: { visible: boolean, scope?: { cwd?: string } }) => createElement(MemoryView, {
         visible,
         remote: remoteMemory,
+        // 侧栏场景：当前会话工作区 cwd（TabComponentProps.scope）
+        cwd: scope?.cwd,
         ctx: tabCtx as MemoryViewProps['ctx'],
       }),
     })

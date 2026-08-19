@@ -156,13 +156,18 @@ export interface MemoryConfig {
 
 /**
  * Cross-session plaintext memory over the storage hub, split by namespace:
- * `global` lives in the harness home, `project` in the project folder.
+ * `global` lives in the harness home, `project` in the session's workspace
+ * folder (`<workspace>/.dsh/storages`, follows the repository) — 0.3.4:
+ * project memory routes by the CALLER's workspace cwd (工具/面板按当前会话
+ * 工作区路由), not the process launch dir.
  */
 export class MemoryEngine extends Service {
   static inject = ['storage']
 
   private globalTable?: KvTable<string, StoredBlock>
-  private projectTable?: KvTable<string, StoredBlock>
+  /** project 域按工作区 cwd 懒打开 + 缓存（多会话并发各工作区独立）。 */
+  private projectTables = new Map<string, KvTable<string, StoredBlock>>()
+  private projectFacilities = new Map<string, DomainFacility>()
   private facility?: DomainFacility
 
   constructor(ctx: import('@deepseek-ai/cordis').Context, private readonly config: MemoryConfig = {}) {
@@ -173,41 +178,75 @@ export class MemoryEngine extends Service {
     // backend 只注册一次：registry 对重名注册抛 duplicate-backend
     // （storage/tests/registry.spec 实测），reload 不得重复注册。
     const globalBackend = new JsonStorageBackend(this.config.globalRoot ?? globalRoot())
-    const projectBackend = new JsonStorageBackend(this.config.projectRoot ?? projectRoot())
     this.ctx.storage.backend.register('memory-global', globalBackend)
-    this.ctx.storage.backend.register('memory-project', projectBackend)
-    await this.openFacility()
-    this.ctx.effect(() => () => { void this.facility?.closeAll() }, 'memory.domainsClose')
+    await this.openGlobalFacility()
+    this.ctx.effect(() => () => {
+      void this.facility?.closeAll()
+      for (const facility of this.projectFacilities.values()) void facility.closeAll()
+    }, 'memory.domainsClose')
   }
 
-  /** 打开存储域（init 与 reload 共用；backend 复用已注册实例）。 */
-  private async openFacility(): Promise<void> {
-    const facility = new DomainFacility(this.ctx, {
-      backend: 'memory-global',
-      routes: { memory_project: 'memory-project' },
-    })
+  /** 打开全局存储域（init 与 reload 共用；backend 复用已注册实例）。 */
+  private async openGlobalFacility(): Promise<void> {
+    const facility = new DomainFacility(this.ctx, { backend: 'memory-global', routes: {} })
     const globalDomain = await facility.open(memorySpec('memory'))
-    const projectDomain = await facility.open(memorySpec('memory_project'))
     this.facility = facility
-
     this.globalTable = globalDomain.table('blocks')
-    this.projectTable = projectDomain.table('blocks')
+  }
+
+  /** 工作区 project 存储根（<workspace>/.dsh/storages，随 git 分享）。 */
+  private projectRootFor(cwd: string): string {
+    return join(cwd, '.dsh', 'storages')
+  }
+
+  /** 稳定 backend 名（registry 重名抛错，按 cwd hash 唯一化；只允许 [a-z0-9_]，domain 名校验）。 */
+  private projectBackendName(cwd: string): string {
+    let h = 5381
+    const text = cwd.toLowerCase() // Windows 路径大小写不敏感
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0
+    return `memory_project_${Math.abs(h).toString(36)}`
   }
 
   /**
-   * 强制重载存储：关闭两域后重开（unit 释放后 backend 重读文件），
-   * 放弃内存缓存。供外部编辑记忆文件后刷新（JsonStorageBackend 打开时
-   * 加载一次，无 watch——2026-08-19 用户实测面板不感知外部编辑）。
+   * 按工作区 cwd 取 project 表（懒打开 + 缓存）。无 cwd（未选工作区）
+   * 返回 undefined——调用方（工具/面板）按此跳过 project 部分。
+   */
+  private async projectTableFor(projectCwd?: string): Promise<KvTable<string, StoredBlock> | undefined> {
+    if (projectCwd === undefined || projectCwd === '') return undefined
+    const key = join(projectCwd) // 规范化（Windows 大小写/尾斜杠）
+    const cached = this.projectTables.get(key)
+    if (cached !== undefined) return cached
+    const backendName = this.projectBackendName(key)
+    const backend = new JsonStorageBackend(this.projectRootFor(key))
+    this.ctx.storage.backend.register(backendName, backend)
+    const facility = new DomainFacility(this.ctx, { backend: backendName, routes: {} })
+    const domain = await facility.open(memorySpec(`memory_project_${backendName}`))
+    const table = domain.table('blocks')
+    this.projectFacilities.set(key, facility)
+    this.projectTables.set(key, table)
+    return table
+  }
+
+  /**
+   * 强制重载存储：关闭全局域与全部已开工作区域后重开（unit 释放后
+   * backend 重读文件），放弃内存缓存。供外部编辑记忆文件后刷新
+   * （JsonStorageBackend 打开时加载一次，无 watch——2026-08-19 实测）。
    */
   async reload(): Promise<void> {
     await this.facility?.closeAll()
-    await this.openFacility()
+    for (const facility of this.projectFacilities.values()) await facility.closeAll()
+    this.projectTables.clear()
+    this.projectFacilities.clear()
+    await this.openGlobalFacility()
   }
 
   /** Create one record in `suggested` status — never self-promoting. */
-  async remember(input: MemoryWrite): Promise<MemoryRecord> {
+  async remember(input: MemoryWrite, projectCwd?: string): Promise<MemoryRecord> {
     const namespace = input.namespace ?? 'global'
-    const table = this.tableFor(namespace)
+    const table = namespace === 'project'
+      ? await this.projectTableFor(projectCwd)
+      : this.tableFor('global')
+    if (table === undefined) throw new Error('cannot write project memory without a workspace cwd')
     const id = randomUUID()
     const now = Date.now()
     const block: StoredBlock = {
@@ -225,15 +264,15 @@ export class MemoryEngine extends Service {
     return record
   }
 
-  list(filter?: MemoryFilter): MemoryRecord[] {
-    const records = this.allRecords(filter?.namespace)
+  async list(filter?: MemoryFilter, projectCwd?: string): Promise<MemoryRecord[]> {
+    const records = await this.allRecords(filter?.namespace, projectCwd)
     return records.filter(record =>
       (filter?.status === undefined || record.status === filter.status)
       && (filter?.injected === undefined || record.injected === filter.injected))
   }
 
-  search(query: string, filter?: MemoryFilter): MemoryHit[] {
-    const records = this.list(filter)
+  async search(query: string, filter?: MemoryFilter, projectCwd?: string): Promise<MemoryHit[]> {
+    const records = await this.list(filter, projectCwd)
     const docs = records.map(record => `${record.content} ${record.keywords.join(' ')}`)
     const scores = bm25Scores(query, docs)
     return records
@@ -242,19 +281,20 @@ export class MemoryEngine extends Service {
       .sort((left, right) => right.score - left.score)
   }
 
-  async forget(id: MemoryId): Promise<boolean> {
+  async forget(id: MemoryId, projectCwd?: string): Promise<boolean> {
     if (await this.requireTable('global').delete(id)) {
       this.ctx.emit('memory/changed', { operation: 'forgotten', id })
       return true
     }
-    if (await this.requireTable('project').delete(id)) {
+    const project = await this.projectTableFor(projectCwd)
+    if (project !== undefined && await project.delete(id)) {
       this.ctx.emit('memory/changed', { operation: 'forgotten', id })
       return true
     }
     return false
   }
 
-  async setStatus(id: MemoryId, status: MemoryStatus): Promise<MemoryRecord> {
+  async setStatus(id: MemoryId, status: MemoryStatus, projectCwd?: string): Promise<MemoryRecord> {
     const global = this.requireTable('global').get(id)
     if (global !== undefined) {
       const updated: StoredBlock = {
@@ -269,18 +309,21 @@ export class MemoryEngine extends Service {
       this.ctx.emit('memory/changed', { operation: 'status', id, status })
       return record
     }
-    const project = this.requireTable('project').get(id)
+    const project = await this.projectTableFor(projectCwd)
     if (project !== undefined) {
-      const updated: StoredBlock = {
-        ...project,
-        status,
-        injected: normalizeBlock(project).injected,
-        updatedAt: Date.now(),
+      const block = project.get(id)
+      if (block !== undefined) {
+        const updated: StoredBlock = {
+          ...block,
+          status,
+          injected: normalizeBlock(block).injected,
+          updatedAt: Date.now(),
+        }
+        await project.put(id, updated)
+        const record = toRecord(id, updated)
+        this.ctx.emit('memory/changed', { operation: 'status', id, status })
+        return record
       }
-      await this.requireTable('project').put(id, updated)
-      const record = toRecord(id, updated)
-      this.ctx.emit('memory/changed', { operation: 'status', id, status })
-      return record
     }
     throw new Error(`cannot set status of unknown memory '${id}'`)
   }
@@ -289,7 +332,7 @@ export class MemoryEngine extends Service {
    * 注入维度开关（0.3.0）：只改 injected，不动审核状态。供 UI 面板
    * 「常驻注入」开关调用（remote.setInjected）。
    */
-  async setInjected(id: MemoryId, injected: boolean): Promise<MemoryRecord> {
+  async setInjected(id: MemoryId, injected: boolean, projectCwd?: string): Promise<MemoryRecord> {
     const global = this.requireTable('global').get(id)
     if (global !== undefined) {
       const updated: StoredBlock = {
@@ -303,18 +346,21 @@ export class MemoryEngine extends Service {
       this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
       return record
     }
-    const project = this.requireTable('project').get(id)
+    const project = await this.projectTableFor(projectCwd)
     if (project !== undefined) {
-      const updated: StoredBlock = {
-        ...project,
-        status: normalizeBlock(project).status,
-        injected,
-        updatedAt: Date.now(),
+      const block = project.get(id)
+      if (block !== undefined) {
+        const updated: StoredBlock = {
+          ...block,
+          status: normalizeBlock(block).status,
+          injected,
+          updatedAt: Date.now(),
+        }
+        await project.put(id, updated)
+        const record = toRecord(id, updated)
+        this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
+        return record
       }
-      await this.requireTable('project').put(id, updated)
-      const record = toRecord(id, updated)
-      this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
-      return record
     }
     throw new Error(`cannot set injected of unknown memory '${id}'`)
   }
@@ -324,7 +370,7 @@ export class MemoryEngine extends Service {
    * 必须重新人工审核：status 重置为 suggested（自然停止注入——注入仅对
    * approved 生效）；injected 保留原值（审核通过后注入开关原样恢复）。
    */
-  async update(id: MemoryId, patch: { content?: string, keywords?: string[] }): Promise<MemoryRecord> {
+  async update(id: MemoryId, patch: { content?: string, keywords?: string[] }, projectCwd?: string): Promise<MemoryRecord> {
     const applyPatch = (block: StoredBlock): StoredBlock => {
       const normalized = normalizeBlock(block)
       return {
@@ -344,23 +390,40 @@ export class MemoryEngine extends Service {
       this.ctx.emit('memory/changed', { operation: 'status', id, status: 'suggested' })
       return record
     }
-    const project = this.requireTable('project').get(id)
+    const project = await this.projectTableFor(projectCwd)
     if (project !== undefined) {
-      const updated = applyPatch(project)
-      await this.requireTable('project').put(id, updated)
-      const record = toRecord(id, updated)
-      this.ctx.emit('memory/changed', { operation: 'status', id, status: 'suggested' })
-      return record
+      const block = project.get(id)
+      if (block !== undefined) {
+        const updated = applyPatch(block)
+        await project.put(id, updated)
+        const record = toRecord(id, updated)
+        this.ctx.emit('memory/changed', { operation: 'status', id, status: 'suggested' })
+        return record
+      }
     }
     throw new Error(`cannot update unknown memory '${id}'`)
   }
 
-  private allRecords(namespace?: MemoryNamespace): MemoryRecord[] {
-    if (namespace === 'project') return this.recordsOf(this.requireTable('project'))
+  /**
+   * 注入专用（0.3.4）：systemPrompt context 是同步回调、无会话 cwd 可及，
+   * 只返回 global 的 approved+injected（工作区记忆走检索/面板）。
+   */
+  recallRecords(): MemoryRecord[] {
+    return this.recordsOf(this.requireTable('global'))
+      .filter(record => record.status === 'approved' && record.injected)
+  }
+
+  private async allRecords(namespace?: MemoryNamespace, projectCwd?: string): Promise<MemoryRecord[]> {
+    if (namespace === 'project') {
+      const project = await this.projectTableFor(projectCwd)
+      if (project === undefined) return []
+      return this.recordsOf(project)
+    }
     if (namespace === 'global') return this.recordsOf(this.requireTable('global'))
+    const project = await this.projectTableFor(projectCwd)
     return [
       ...this.recordsOf(this.requireTable('global')),
-      ...this.recordsOf(this.requireTable('project')),
+      ...(project === undefined ? [] : this.recordsOf(project)),
     ]
   }
 
@@ -373,7 +436,7 @@ export class MemoryEngine extends Service {
   }
 
   private requireTable(namespace: MemoryNamespace): KvTable<string, StoredBlock> {
-    const table = namespace === 'global' ? this.globalTable : this.projectTable
+    const table = namespace === 'global' ? this.globalTable : undefined
     if (table === undefined) throw new Error('memory engine is not started yet')
     return table
   }

@@ -22,22 +22,22 @@ export class MemoryGateway extends TypertRemoteService {
     super(ctx, 'memoryRemote', { namespace: 'memory' })
   }
 
-  /** List every stored memory, optionally filtered by namespace or status. */
+  /** List every stored memory, optionally filtered by namespace/status/injected and workspace cwd. */
   @Remote('list')
-  list(filter?: MemoryFilter): MemoryRecord[] {
-    return this.ctx.memory.list(filter)
+  async list(filter?: MemoryFilter, cwd?: string): Promise<MemoryRecord[]> {
+    return this.ctx.memory.list(filter, cwd)
   }
 
   /** Recall memories by keyword; deterministic literal matching. */
   @Remote('search')
-  search(query: string, filter?: MemoryFilter): MemoryHit[] {
-    return this.ctx.memory.search(query, filter)
+  async search(query: string, filter?: MemoryFilter, cwd?: string): Promise<MemoryHit[]> {
+    return this.ctx.memory.search(query, filter, cwd)
   }
 
   /** Approve a suggested memory (review status `suggested` → `approved`); does not change injection. */
   @Remote('confirm')
-  confirm(id: string): Promise<MemoryRecord> {
-    return this.ctx.memory.setStatus(MemoryId(id), 'approved')
+  confirm(id: string, cwd?: string): Promise<MemoryRecord> {
+    return this.ctx.memory.setStatus(MemoryId(id), 'approved', cwd)
   }
 
   /**
@@ -45,21 +45,21 @@ export class MemoryGateway extends TypertRemoteService {
    * 「常驻注入」 switch; does not change the review status.
    */
   @Remote('setInjected')
-  setInjected(id: string, injected: boolean): Promise<MemoryRecord> {
-    return this.ctx.memory.setInjected(MemoryId(id), injected)
+  setInjected(id: string, injected: boolean, cwd?: string): Promise<MemoryRecord> {
+    return this.ctx.memory.setInjected(MemoryId(id), injected, cwd)
   }
 
   /** Delete one stored memory by id. */
   @Remote('forget')
-  forget(id: string): Promise<boolean> {
-    return this.ctx.memory.forget(MemoryId(id))
+  forget(id: string, cwd?: string): Promise<boolean> {
+    return this.ctx.memory.forget(MemoryId(id), cwd)
   }
 
   /** Force-reload storage files (external edits; JsonStorageBackend has no watch). */
   @Remote('reload')
-  async reload(): Promise<MemoryRecord[]> {
+  async reload(cwd?: string): Promise<MemoryRecord[]> {
     await this.ctx.memory.reload()
-    return this.ctx.memory.list()
+    return this.ctx.memory.list({}, cwd)
   }
 }
 

@@ -46,7 +46,8 @@ var STRINGS = {
     approveFirst: "\u5BA1\u6838\u901A\u8FC7\u540E\u53EF\u5E38\u9A7B\u6CE8\u5165",
     allNamespaces: "\u5168\u90E8",
     nsGlobal: "\u5168\u5C40",
-    nsProject: "\u9879\u76EE",
+    nsWorkspace: "\u5DE5\u4F5C\u533A",
+    noWorkspace: "\u672A\u9009\u62E9\u5DE5\u4F5C\u533A",
     organizeMemory: "\u6574\u7406\u8BB0\u5FC6",
     confirmAll: "\u5168\u90E8\u786E\u8BA4",
     suggested: "\u5F85\u5BA1\u6838",
@@ -66,7 +67,8 @@ var STRINGS = {
     approveFirst: "Approve to enable injection",
     allNamespaces: "All",
     nsGlobal: "Global",
-    nsProject: "Project",
+    nsWorkspace: "Workspace",
+    noWorkspace: "No workspace selected",
     organizeMemory: "Organize memory",
     confirmAll: "Approve all",
     suggested: "Suggested",
@@ -131,7 +133,7 @@ function MemoryView(props) {
   const [organizing, setOrganizing] = (0, import_react.useState)(false);
   const reload = async () => {
     try {
-      setRecords(await props.remote.list());
+      setRecords(await props.remote.list({}, props.cwd));
     } catch {
       setRecords([]);
     }
@@ -139,7 +141,7 @@ function MemoryView(props) {
   const refreshFromDisk = async () => {
     setRefreshing(true);
     try {
-      const value = await props.remote.reload();
+      const value = await props.remote.reload(props.cwd);
       setRecords(value);
     } catch {
       await reload();
@@ -153,7 +155,7 @@ function MemoryView(props) {
   const toggleInjected = async (record) => {
     if (record.status !== "approved") return;
     try {
-      await props.remote.setInjected(record.id, !record.injected);
+      await props.remote.setInjected(record.id, !record.injected, props.cwd);
     } catch {
     }
     await reload();
@@ -161,7 +163,7 @@ function MemoryView(props) {
   const confirmAll = async () => {
     const pending = records.filter((record) => record.status === "suggested");
     if (pending.length === 0) return;
-    await Promise.all(pending.map((record) => props.remote.confirm(record.id).catch(() => null)));
+    await Promise.all(pending.map((record) => props.remote.confirm(record.id, props.cwd).catch(() => null)));
     await reload();
   };
   const organize = async () => {
@@ -197,7 +199,7 @@ function MemoryView(props) {
     }
   };
   const q = query.trim().toLowerCase();
-  const byNs = namespace === null ? records : records.filter((record) => record.namespace === namespace);
+  const byNs = namespace === null ? records : namespace === "workspace" ? records.filter((record) => record.namespace === "project") : records.filter((record) => record.namespace === "global");
   const filtered = byNs.filter((record) => q === "" || record.content.toLowerCase().includes(q));
   const groups = [
     { key: "pending", label: t("groupPending"), items: filtered.filter((record) => record.status === "suggested") },
@@ -250,15 +252,16 @@ function MemoryView(props) {
     (0, import_react.createElement)(
       "div",
       { style: { display: "flex", gap: 4 } },
-      [null, "global", "project"].map((ns) => (0, import_react.createElement)("button", {
+      [null, "global", "workspace"].map((ns) => (0, import_react.createElement)("button", {
         key: ns ?? "all",
         onClick: () => {
           setNamespace(ns);
         },
         style: { flex: 1, ...ssid.btn, ...namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {} }
-      }, ns === null ? t("allNamespaces") : ns === "global" ? t("nsGlobal") : t("nsProject")))
+      }, ns === null ? t("allNamespaces") : ns === "global" ? t("nsGlobal") : t("nsWorkspace")))
     ),
-    groups.length === 0 ? (0, import_react.createElement)("div", { style: ssid.empty }, t("empty")) : groups.map((group) => (0, import_react.createElement)(
+    // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
+    namespace === "workspace" && (props.cwd === void 0 || props.cwd === "") ? (0, import_react.createElement)("div", { style: ssid.empty }, t("noWorkspace")) : groups.length === 0 ? (0, import_react.createElement)("div", { style: ssid.empty }, t("empty")) : groups.map((group) => (0, import_react.createElement)(
       "div",
       { key: group.key, style: { display: "flex", flexDirection: "column", gap: 6 } },
       (0, import_react.createElement)(
@@ -308,19 +311,37 @@ function MemoryView(props) {
           record.status === "suggested" ? (0, import_react.createElement)("button", {
             style: ssid.btn,
             onClick: () => {
-              void props.remote.confirm(record.id).then(() => reload());
+              void props.remote.confirm(record.id, props.cwd).then(() => reload());
             }
           }, t("confirm")) : null,
           (0, import_react.createElement)("button", {
             style: ssid.btn,
             onClick: () => {
-              void props.remote.forget(record.id).then(() => reload());
+              void props.remote.forget(record.id, props.cwd).then(() => reload());
             }
           }, t("forget"))
         )
       ))
     ))
   );
+}
+function currentSessionCwd(ctx) {
+  try {
+    const sessions = ctx.get?.("sessions");
+    const snapshot = sessions?.list?.getSnapshot?.();
+    if (snapshot?.current === void 0) return void 0;
+    return snapshot.byId?.[snapshot.current]?.cwd;
+  } catch {
+    return void 0;
+  }
+}
+function SettingsMemoryView(props) {
+  return (0, import_react.createElement)(MemoryView, {
+    visible: true,
+    remote: props.remote,
+    ctx: props.ctx,
+    cwd: currentSessionCwd(props.ctx)
+  });
 }
 function apply(ctx) {
   const face = ctx;
@@ -339,8 +360,7 @@ function apply(ctx) {
       order: 60,
       label: () => STRINGS[localeId].tabMemory,
       inject: () => ({})
-    }, () => (0, import_react.createElement)(MemoryView, {
-      visible: true,
+    }, () => (0, import_react.createElement)(SettingsMemoryView, {
       remote: remoteMemory,
       ctx
     })));
@@ -357,9 +377,11 @@ function apply(ctx) {
       title: () => STRINGS[localeId].tabMemory,
       order: 60,
       single: true,
-      component: ({ visible }) => (0, import_react.createElement)(MemoryView, {
+      component: ({ visible, scope }) => (0, import_react.createElement)(MemoryView, {
         visible,
         remote: remoteMemory,
+        // 侧栏场景：当前会话工作区 cwd（TabComponentProps.scope）
+        cwd: scope?.cwd,
         ctx: tabCtx
       })
     });
