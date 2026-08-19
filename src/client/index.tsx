@@ -31,6 +31,8 @@ const STRINGS = {
     noWorkspace: '未选择工作区',
     organizeMemory: '整理记忆',
     confirmAll: '全部确认',
+    injectPreview: '注入预览',
+    keywordsLabel: '关键词',
     suggested: '待审核',
     approved: '已审核',
     refresh: '刷新',
@@ -52,6 +54,8 @@ const STRINGS = {
     noWorkspace: 'No workspace selected',
     organizeMemory: 'Organize memory',
     confirmAll: 'Approve all',
+    injectPreview: 'Injection preview',
+    keywordsLabel: 'Keywords',
     suggested: 'Suggested',
     approved: 'Approved',
     refresh: 'Refresh',
@@ -110,6 +114,10 @@ interface RemoteMemory {
   confirm(id: string, cwd?: string): Promise<Record<string, unknown>>
   forget(id: string, cwd?: string): Promise<boolean>
   setInjected(id: string, injected: boolean, cwd?: string): Promise<Record<string, unknown>>
+  /** 注入预览（0.3.5）：self 自述 + 当前注入的 global approved+injected 记忆。 */
+  injectionPreview(): Promise<{ self: string, injected: Array<{
+    id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[]
+  }> }>
 }
 
 // 预填指令（0.3.1+）：过时内容用 memory_update 修正；工具面自查法。
@@ -132,6 +140,18 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const [namespace, setNamespace] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [organizing, setOrganizing] = useState(false)
+  // 注入预览（0.3.5）：开发者查看注入到 system prompt 的内容
+  const [preview, setPreview] = useState<Awaited<ReturnType<RemoteMemory['injectionPreview']>> | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const togglePreview = async (): Promise<void> => {
+    if (previewOpen) { setPreviewOpen(false); return }
+    try {
+      setPreview(await props.remote.injectionPreview())
+    } catch {
+      setPreview(null)
+    }
+    setPreviewOpen(true)
+  }
   const reload = async (): Promise<void> => {
     try {
       setRecords(await props.remote.list({}, props.cwd))
@@ -232,6 +252,12 @@ function MemoryView(props: MemoryViewProps): ReactNode {
         disabled: organizing,
         style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent },
       }, organizing ? '…' : t('organizeMemory')),
+      createElement('button', {
+        type: 'button',
+        title: t('injectPreview'),
+        onClick: () => { void togglePreview() },
+        style: { ...ssid.btn, ...(previewOpen ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
+      }, t('injectPreview')),
       createElement('input', {
         value: query,
         onChange: (event: { target: { value: string } }) => { setQuery(event.target.value) },
@@ -258,6 +284,16 @@ function MemoryView(props: MemoryViewProps): ReactNode {
         style: { flex: 1, ...ssid.btn, ...(namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
       }, ns === null ? t('allNamespaces') : ns === 'global' ? t('nsGlobal') : t('nsWorkspace'))),
     ),
+    // 注入预览（开发者）：self 自述 + 当前注入的记忆
+    previewOpen && preview !== null
+      ? createElement('div', { style: { ...ssid.card, display: 'flex', flexDirection: 'column', gap: 6 } },
+        createElement('div', { style: { ...ssid.text, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 160, overflowY: 'auto' } }, preview.self),
+        preview.injected.length === 0
+          ? createElement('div', { style: ssid.muted }, t('empty'))
+          : preview.injected.map(record => createElement('div', { key: record.id, style: { ...ssid.muted, fontSize: 11 } },
+            `- [memory:${record.id.slice(0, 8)}] ${record.content}`)),
+      )
+      : null,
     // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
     namespace === 'workspace' && (props.cwd === undefined || props.cwd === '')
       ? createElement('div', { style: ssid.empty }, t('noWorkspace'))
@@ -280,6 +316,18 @@ function MemoryView(props: MemoryViewProps): ReactNode {
           ),
           group.items.map(record => createElement('div', { key: record.id, style: ssid.card },
             createElement('div', { style: ssid.text }, record.content),
+            // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
+            record.keywords !== undefined && record.keywords.length > 0
+              ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 } },
+                record.keywords.map(keyword => createElement('span', {
+                  key: keyword,
+                  style: {
+                    fontSize: 10, padding: '1px 7px', borderRadius: 8,
+                    background: 'var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))',
+                    color: 'var(--dsw-alias-label-secondary, #67748a)',
+                  },
+                }, keyword)))
+              : null,
             createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
               `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}`),
             createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },

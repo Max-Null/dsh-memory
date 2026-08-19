@@ -11,6 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
 import type { MemoryFilter, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryId } from './engine.ts'
+import { SELF_DESCRIPTION } from './self.ts'
 
 /** Client-callable memory surface; registered as the `memory` Typert namespace. */
 export class MemoryGateway extends TypertRemoteService {
@@ -60,6 +61,15 @@ export class MemoryGateway extends TypertRemoteService {
   async reload(cwd?: string): Promise<MemoryRecord[]> {
     await this.ctx.memory.reload()
     return this.ctx.memory.list({}, cwd)
+  }
+
+  /**
+   * 注入预览（0.3.5）：开发者查看当前注入到 system prompt 的记忆内容
+   * ——self 自述 + 实际注入的 global approved+injected 记忆。
+   */
+  @Remote('injectionPreview')
+  injectionPreview(): { self: string, injected: MemoryRecord[] } {
+    return { self: SELF_DESCRIPTION, injected: this.ctx.memory.recallRecords() }
   }
 }
 

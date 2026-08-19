@@ -50,6 +50,8 @@ var STRINGS = {
     noWorkspace: "\u672A\u9009\u62E9\u5DE5\u4F5C\u533A",
     organizeMemory: "\u6574\u7406\u8BB0\u5FC6",
     confirmAll: "\u5168\u90E8\u786E\u8BA4",
+    injectPreview: "\u6CE8\u5165\u9884\u89C8",
+    keywordsLabel: "\u5173\u952E\u8BCD",
     suggested: "\u5F85\u5BA1\u6838",
     approved: "\u5DF2\u5BA1\u6838",
     refresh: "\u5237\u65B0"
@@ -71,6 +73,8 @@ var STRINGS = {
     noWorkspace: "No workspace selected",
     organizeMemory: "Organize memory",
     confirmAll: "Approve all",
+    injectPreview: "Injection preview",
+    keywordsLabel: "Keywords",
     suggested: "Suggested",
     approved: "Approved",
     refresh: "Refresh"
@@ -131,6 +135,20 @@ function MemoryView(props) {
   const [namespace, setNamespace] = (0, import_react.useState)(null);
   const [refreshing, setRefreshing] = (0, import_react.useState)(false);
   const [organizing, setOrganizing] = (0, import_react.useState)(false);
+  const [preview, setPreview] = (0, import_react.useState)(null);
+  const [previewOpen, setPreviewOpen] = (0, import_react.useState)(false);
+  const togglePreview = async () => {
+    if (previewOpen) {
+      setPreviewOpen(false);
+      return;
+    }
+    try {
+      setPreview(await props.remote.injectionPreview());
+    } catch {
+      setPreview(null);
+    }
+    setPreviewOpen(true);
+  };
   const reload = async () => {
     try {
       setRecords(await props.remote.list({}, props.cwd));
@@ -221,6 +239,14 @@ function MemoryView(props) {
         disabled: organizing,
         style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent }
       }, organizing ? "\u2026" : t("organizeMemory")),
+      (0, import_react.createElement)("button", {
+        type: "button",
+        title: t("injectPreview"),
+        onClick: () => {
+          void togglePreview();
+        },
+        style: { ...ssid.btn, ...previewOpen ? { color: ssid.accent, borderColor: ssid.accent } : {} }
+      }, t("injectPreview")),
       (0, import_react.createElement)("input", {
         value: query,
         onChange: (event) => {
@@ -260,6 +286,17 @@ function MemoryView(props) {
         style: { flex: 1, ...ssid.btn, ...namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {} }
       }, ns === null ? t("allNamespaces") : ns === "global" ? t("nsGlobal") : t("nsWorkspace")))
     ),
+    // 注入预览（开发者）：self 自述 + 当前注入的记忆
+    previewOpen && preview !== null ? (0, import_react.createElement)(
+      "div",
+      { style: { ...ssid.card, display: "flex", flexDirection: "column", gap: 6 } },
+      (0, import_react.createElement)("div", { style: { ...ssid.text, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 160, overflowY: "auto" } }, preview.self),
+      preview.injected.length === 0 ? (0, import_react.createElement)("div", { style: ssid.muted }, t("empty")) : preview.injected.map((record) => (0, import_react.createElement)(
+        "div",
+        { key: record.id, style: { ...ssid.muted, fontSize: 11 } },
+        `- [memory:${record.id.slice(0, 8)}] ${record.content}`
+      ))
+    ) : null,
     // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
     namespace === "workspace" && (props.cwd === void 0 || props.cwd === "") ? (0, import_react.createElement)("div", { style: ssid.empty }, t("noWorkspace")) : groups.length === 0 ? (0, import_react.createElement)("div", { style: ssid.empty }, t("empty")) : groups.map((group) => (0, import_react.createElement)(
       "div",
@@ -286,6 +323,21 @@ function MemoryView(props) {
         "div",
         { key: record.id, style: ssid.card },
         (0, import_react.createElement)("div", { style: ssid.text }, record.content),
+        // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
+        record.keywords !== void 0 && record.keywords.length > 0 ? (0, import_react.createElement)(
+          "div",
+          { style: { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 } },
+          record.keywords.map((keyword) => (0, import_react.createElement)("span", {
+            key: keyword,
+            style: {
+              fontSize: 10,
+              padding: "1px 7px",
+              borderRadius: 8,
+              background: "var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))",
+              color: "var(--dsw-alias-label-secondary, #67748a)"
+            }
+          }, keyword))
+        ) : null,
         (0, import_react.createElement)(
           "div",
           { style: { ...ssid.muted, marginTop: 6 } },
