@@ -1,6 +1,6 @@
 {
   "name": "@max-null/dsh-memory",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Cross-session plaintext memory plugin for the DeepSeek Harness — deterministic BM25 recall, human-owned, no embeddings",
   "license": "MIT",
   "publishConfig": {
@@ -13,7 +13,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./client": "./client.js"
   },
   "files": [
     "dist",
@@ -22,6 +23,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
     }
   },
   "keywords": [
@@ -39,7 +47,7 @@
     "url": "git+https://github.com/Max-Null/dsh-memory.git"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node build-client.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "prepublishOnly": "npm run build"

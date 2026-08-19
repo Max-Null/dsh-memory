@@ -54,6 +54,13 @@ export class MemoryGateway extends TypertRemoteService {
   forget(id: string): Promise<boolean> {
     return this.ctx.memory.forget(MemoryId(id))
   }
+
+  /** Force-reload storage files (external edits; JsonStorageBackend has no watch). */
+  @Remote('reload')
+  async reload(): Promise<MemoryRecord[]> {
+    await this.ctx.memory.reload()
+    return this.ctx.memory.list()
+  }
 }
 
 export default MemoryGateway
