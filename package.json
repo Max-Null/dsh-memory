@@ -14,7 +14,8 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./client": "./client.js"
+    "./client": "./client.js",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
