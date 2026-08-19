@@ -32,6 +32,68 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 var import_react = require("react");
 var inject = ["slots", "locale"];
+var BRAIN_PATHS = [
+  "M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z",
+  "M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"
+];
+function brainIcon() {
+  return (0, import_react.createElement)("svg", {
+    width: 15,
+    height: 15,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, BRAIN_PATHS.map((d, index) => (0, import_react.createElement)("path", { key: index, d })));
+}
+var SETTINGS_NAV_MARKER = "data-dsh-memory-settings-nav";
+var BRAIN_MASK_SVG = `%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z'/%3E%3Cpath d='M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z'/%3E%3C/svg%3E`;
+var NAV_ICON_CSS = `
+[data-dsh-memory-settings-nav] > svg:first-child { display: none; }
+[data-dsh-memory-settings-nav]::before {
+  content: '';
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,${BRAIN_MASK_SVG}") center / contain no-repeat;
+  mask: url("data:image/svg+xml,${BRAIN_MASK_SVG}") center / contain no-repeat;
+}
+`;
+var navCssInjected = false;
+function injectNavCss() {
+  if (navCssInjected || typeof document === "undefined") return;
+  navCssInjected = true;
+  const style = document.createElement("style");
+  style.setAttribute("data-plugin", "@max-null/dsh-memory");
+  style.textContent = NAV_ICON_CSS;
+  document.head.append(style);
+}
+function registerSettingsNavIcon(label) {
+  let disposed = false;
+  const sync = () => {
+    if (disposed) return;
+    const currentLabel = label().trim();
+    const buttons = document.querySelectorAll('[role="dialog"] nav button');
+    for (const button of buttons) {
+      const matches = currentLabel.length > 0 && button.textContent?.trim() === currentLabel;
+      if (matches) button.setAttribute(SETTINGS_NAV_MARKER, "");
+      else button.removeAttribute(SETTINGS_NAV_MARKER);
+    }
+  };
+  sync();
+  const observer = new MutationObserver(sync);
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  return () => {
+    disposed = true;
+    observer.disconnect();
+    document.querySelectorAll(`[${SETTINGS_NAV_MARKER}]`).forEach((element) => {
+      element.removeAttribute(SETTINGS_NAV_MARKER);
+    });
+  };
+}
 var STRINGS = {
   zh: {
     tabMemory: "\u8BB0\u5FC6",
@@ -449,6 +511,7 @@ function apply(ctx) {
   });
   const slots = ctx.slots;
   if (slots?.inject !== void 0) {
+    injectNavCss();
     slots.inject("settings.section", () => slots.register({
       name: "settings.section",
       id: "dsh-memory",
@@ -458,6 +521,7 @@ function apply(ctx) {
     }, () => (0, import_react.createElement)(SettingsMemoryView, {
       ctx
     })));
+    face.effect?.(() => registerSettingsNavIcon(() => STRINGS[localeId].tabMemory), "dsh-memory: settings navigation icon");
   }
   const root = ctx;
   if (root.inject === void 0) return;
@@ -468,6 +532,7 @@ function apply(ctx) {
     service.registerTab({
       id: "@max-null/dsh-memory:memory",
       title: () => STRINGS[localeId].tabMemory,
+      icon: brainIcon,
       order: 60,
       single: true,
       component: ({ visible, scope }) => (0, import_react.createElement)(MemoryView, {
