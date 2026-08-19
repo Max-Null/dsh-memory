@@ -330,13 +330,27 @@ function apply(ctx) {
   face.on?.("locale/change", (snap) => {
     adoptLocale(snap?.active);
   });
+  const slots = ctx.slots;
+  const remoteMemory = ctx.remote?.memory;
+  if (slots?.inject !== void 0 && remoteMemory !== void 0) {
+    slots.inject("settings.section", () => slots.register({
+      name: "settings.section",
+      id: "dsh-memory",
+      order: 60,
+      label: () => STRINGS[localeId].tabMemory,
+      inject: () => ({})
+    }, () => (0, import_react.createElement)(MemoryView, {
+      visible: true,
+      remote: remoteMemory,
+      ctx
+    })));
+  }
   const root = ctx;
   if (root.inject === void 0) return;
   root.inject(["betterSidebar"], (sidebarCtx) => {
     const service = sidebarCtx.betterSidebar;
     if (service?.registerTab === void 0) return;
-    const memory = ctx.remote?.memory;
-    if (memory === void 0) return;
+    if (remoteMemory === void 0) return;
     const tabCtx = ctx;
     service.registerTab({
       id: "@max-null/dsh-memory:memory",
@@ -345,7 +359,7 @@ function apply(ctx) {
       single: true,
       component: ({ visible }) => (0, import_react.createElement)(MemoryView, {
         visible,
-        remote: memory,
+        remote: remoteMemory,
         ctx: tabCtx
       })
     });

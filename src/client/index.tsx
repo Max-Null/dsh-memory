@@ -318,7 +318,31 @@ export function apply(ctx: unknown): void {
   if (typeof initial === 'string') adoptLocale(initial)
   face.on?.('locale/change', (snap) => { adoptLocale((snap as { active?: string } | undefined)?.active) })
 
-  // better-sidebar 可选软依赖：无则面板不注册（host 侧无影响）。
+  const slots = (ctx as {
+    slots?: {
+      inject?(name: string, cb: () => unknown): void
+      register?(descriptor: unknown, component: unknown): unknown
+    }
+  }).slots
+  const remoteMemory = (ctx as { remote?: { memory?: RemoteMemory } }).remote?.memory
+
+  // 兜底入口：设置页「记忆」条目——任何环境（无 better-sidebar 也）可管理记忆。
+  // 与侧栏 tab 双入口并存（2026-08-19 用户：没有侧栏就没有管理面板的问题）。
+  if (slots?.inject !== undefined && remoteMemory !== undefined) {
+    slots.inject('settings.section', () => slots.register({
+      name: 'settings.section',
+      id: 'dsh-memory',
+      order: 60,
+      label: () => STRINGS[localeId].tabMemory,
+      inject: () => ({}),
+    }, () => createElement(MemoryView, {
+      visible: true,
+      remote: remoteMemory,
+      ctx: ctx as MemoryViewProps['ctx'],
+    })))
+  }
+
+  // better-sidebar 可选软依赖：有侧栏时挂 tab（无则设置页兜底）。
   const root = ctx as {
     inject?(names: string[], cb: (c: unknown) => void): void
   }
@@ -326,8 +350,7 @@ export function apply(ctx: unknown): void {
   root.inject(['betterSidebar'], (sidebarCtx: unknown) => {
     const service = (sidebarCtx as { betterSidebar?: { registerTab?(descriptor: unknown): unknown } }).betterSidebar
     if (service?.registerTab === undefined) return
-    const memory = (ctx as { remote?: { memory?: RemoteMemory } }).remote?.memory
-    if (memory === undefined) return
+    if (remoteMemory === undefined) return
     const tabCtx = ctx as LocaleAwareContext
     service.registerTab({
       id: '@max-null/dsh-memory:memory',
@@ -336,7 +359,7 @@ export function apply(ctx: unknown): void {
       single: true,
       component: ({ visible }: { visible: boolean }) => createElement(MemoryView, {
         visible,
-        remote: memory,
+        remote: remoteMemory,
         ctx: tabCtx as MemoryViewProps['ctx'],
       }),
     })
