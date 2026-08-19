@@ -34,6 +34,7 @@ const STRINGS = {
     organizeMemory: '整理记忆',
     confirmAll: '全部确认',
     injectPreview: '注入预览',
+    contextUsage: '上下文占用',
     keywordsLabel: '关键词',
     suggested: '待审核',
     approved: '已审核',
@@ -57,6 +58,7 @@ const STRINGS = {
     organizeMemory: 'Organize memory',
     confirmAll: 'Approve all',
     injectPreview: 'Injection preview',
+    contextUsage: 'Context usage',
     keywordsLabel: 'Keywords',
     suggested: 'Suggested',
     approved: 'Approved',
@@ -307,10 +309,21 @@ function MemoryView(props: MemoryViewProps): ReactNode {
         style: { flex: 1, ...ssid.btn, ...(namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
       }, ns === null ? t('allNamespaces') : ns === 'global' ? t('nsGlobal') : t('nsWorkspace'))),
     ),
-    // 注入预览（开发者）：self 自述 + 当前注入的记忆
+    // 注入预览（开发者）：self 自述 + 当前注入的记忆 + 上下文占用统计
     previewOpen && preview !== null
       ? createElement('div', { style: { ...ssid.card, display: 'flex', flexDirection: 'column', gap: 6 } },
-        createElement('div', { style: { ...ssid.text, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 160, overflowY: 'auto' } }, preview.self),
+        createElement('div', { style: { ...ssid.muted, fontSize: 10.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+          createElement('span', null, t('contextUsage')),
+          createElement('span', null, (() => {
+            const selfChars = preview.self.length
+            const injectedChars = preview.injected.reduce((sum, record) => sum + record.content.length + record.keywords.join('').length, 0)
+            const total = selfChars + injectedChars
+            // 粗估（中英混合，标注 ≈）：中文约 1.5 字符/token，英文约 4 字符/token
+            const tokens = Math.ceil(total / 2)
+            return `${selfChars}+${injectedChars} 字符 ≈ ${tokens} token`
+          })()),
+        ),
+        createElement('div', { style: { ...ssid.text, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, preview.self),
         preview.injected.length === 0
           ? createElement('div', { style: ssid.muted }, t('empty'))
           : preview.injected.map(record => createElement('div', { key: record.id, style: { ...ssid.muted, fontSize: 11 } },

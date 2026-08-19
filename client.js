@@ -51,6 +51,7 @@ var STRINGS = {
     organizeMemory: "\u6574\u7406\u8BB0\u5FC6",
     confirmAll: "\u5168\u90E8\u786E\u8BA4",
     injectPreview: "\u6CE8\u5165\u9884\u89C8",
+    contextUsage: "\u4E0A\u4E0B\u6587\u5360\u7528",
     keywordsLabel: "\u5173\u952E\u8BCD",
     suggested: "\u5F85\u5BA1\u6838",
     approved: "\u5DF2\u5BA1\u6838",
@@ -74,6 +75,7 @@ var STRINGS = {
     organizeMemory: "Organize memory",
     confirmAll: "Approve all",
     injectPreview: "Injection preview",
+    contextUsage: "Context usage",
     keywordsLabel: "Keywords",
     suggested: "Suggested",
     approved: "Approved",
@@ -317,11 +319,23 @@ function MemoryView(props) {
         style: { flex: 1, ...ssid.btn, ...namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {} }
       }, ns === null ? t("allNamespaces") : ns === "global" ? t("nsGlobal") : t("nsWorkspace")))
     ),
-    // 注入预览（开发者）：self 自述 + 当前注入的记忆
+    // 注入预览（开发者）：self 自述 + 当前注入的记忆 + 上下文占用统计
     previewOpen && preview !== null ? (0, import_react.createElement)(
       "div",
       { style: { ...ssid.card, display: "flex", flexDirection: "column", gap: 6 } },
-      (0, import_react.createElement)("div", { style: { ...ssid.text, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 160, overflowY: "auto" } }, preview.self),
+      (0, import_react.createElement)(
+        "div",
+        { style: { ...ssid.muted, fontSize: 10.5, display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        (0, import_react.createElement)("span", null, t("contextUsage")),
+        (0, import_react.createElement)("span", null, (() => {
+          const selfChars = preview.self.length;
+          const injectedChars = preview.injected.reduce((sum, record) => sum + record.content.length + record.keywords.join("").length, 0);
+          const total = selfChars + injectedChars;
+          const tokens = Math.ceil(total / 2);
+          return `${selfChars}+${injectedChars} \u5B57\u7B26 \u2248 ${tokens} token`;
+        })())
+      ),
+      (0, import_react.createElement)("div", { style: { ...ssid.text, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all" } }, preview.self),
       preview.injected.length === 0 ? (0, import_react.createElement)("div", { style: ssid.muted }, t("empty")) : preview.injected.map((record) => (0, import_react.createElement)(
         "div",
         { key: record.id, style: { ...ssid.muted, fontSize: 11 } },
