@@ -24,13 +24,18 @@ export function MemoryId(id: string): MemoryId {
 }
 
 export type MemoryNamespace = 'global' | 'project'
-/** `suggested` is model-written; only a human confirmation promotes it. */
-export type MemoryStatus = 'suggested' | 'auto' | 'suggest'
+/**
+ * 审核维度（0.3.0）：`suggested` 待审核（模型写入）；`approved` 已人工
+ * 审核通过。注入与否由独立维度 `injected` 控制（见 MemoryRecord）。
+ */
+export type MemoryStatus = 'suggested' | 'approved'
 
 export interface MemoryRecord {
   id: MemoryId
   namespace: MemoryNamespace
   status: MemoryStatus
+  /** 注入维度：true = 每轮全量注入 system prompt（常驻）；false = 仅检索。 */
+  injected: boolean
   content: string
   keywords: string[]
   createdAt: number
@@ -46,6 +51,7 @@ export interface MemoryWrite {
 export interface MemoryFilter {
   namespace?: MemoryNamespace
   status?: MemoryStatus
+  injected?: boolean
 }
 
 export interface MemoryHit {
@@ -58,6 +64,7 @@ export type MemoryChange =
   | { operation: 'remembered'; record: MemoryRecord }
   | { operation: 'forgotten'; id: MemoryId }
   | { operation: 'status'; id: MemoryId; status: MemoryStatus }
+  | { operation: 'injected'; id: MemoryId; injected: boolean }
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -69,9 +76,16 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+/**
+ * 存储层状态保留旧枚举（auto/suggest）+ injected 可选——旧文件必须能
+ * 过 schema 校验，读时由 normalizeBlock 迁移（一次性兼容转换，不重写文件）。
+ */
+type StoredStatus = MemoryStatus | 'auto' | 'suggest'
+
 interface StoredBlock {
   namespace: MemoryNamespace
-  status: MemoryStatus
+  status: StoredStatus
+  injected?: boolean
   content: string
   keywords: string[]
   createdAt: number
@@ -80,7 +94,8 @@ interface StoredBlock {
 
 const blockSchema = z.object({
   namespace: z.enum(['global', 'project']),
-  status: z.enum(['suggested', 'auto', 'suggest']),
+  status: z.enum(['suggested', 'approved', 'auto', 'suggest']),
+  injected: z.boolean().optional(),
   content: z.string(),
   keywords: z.array(z.string()),
   createdAt: z.number(),
@@ -96,8 +111,29 @@ function memorySpec(name: string) {
   })
 }
 
+/**
+ * 旧 schema 迁移（0.3.0，设计文档「迁移规则」）：
+ * - 旧 `auto` → approved + injected:true（行为不变：仍常驻注入）
+ * - 旧 `suggest` → suggested + injected:false
+ * - 缺 injected 的 approved → injected:false（新写路径兜底）
+ * - 其余 → suggested + injected:false
+ */
+function normalizeBlock(block: StoredBlock): { status: MemoryStatus; injected: boolean } {
+  if (block.status === 'auto') return { status: 'approved', injected: true }
+  if (block.status === 'suggest') return { status: 'suggested', injected: false }
+  return { status: block.status, injected: block.injected ?? false }
+}
+
 function toRecord(id: string, block: StoredBlock): MemoryRecord {
-  return { id: MemoryId(id), ...block }
+  return {
+    id: MemoryId(id),
+    namespace: block.namespace,
+    ...normalizeBlock(block),
+    content: block.content,
+    keywords: block.keywords,
+    createdAt: block.createdAt,
+    updatedAt: block.updatedAt,
+  }
 }
 
 /** Harness-home root for `global` memories. */
@@ -177,6 +213,7 @@ export class MemoryEngine extends Service {
     const block: StoredBlock = {
       namespace,
       status: 'suggested',
+      injected: false,
       content: input.content,
       keywords: (input.keywords ?? []).map(keyword => keyword.toLowerCase()),
       createdAt: now,
@@ -191,7 +228,8 @@ export class MemoryEngine extends Service {
   list(filter?: MemoryFilter): MemoryRecord[] {
     const records = this.allRecords(filter?.namespace)
     return records.filter(record =>
-      (filter?.status === undefined || record.status === filter.status))
+      (filter?.status === undefined || record.status === filter.status)
+      && (filter?.injected === undefined || record.injected === filter.injected))
   }
 
   search(query: string, filter?: MemoryFilter): MemoryHit[] {
@@ -219,7 +257,13 @@ export class MemoryEngine extends Service {
   async setStatus(id: MemoryId, status: MemoryStatus): Promise<MemoryRecord> {
     const global = this.requireTable('global').get(id)
     if (global !== undefined) {
-      const updated: StoredBlock = { ...global, status, updatedAt: Date.now() }
+      const updated: StoredBlock = {
+        ...global,
+        status,
+        // 旧数据可能缺 injected，写回时补全（读时迁移值）
+        injected: normalizeBlock(global).injected,
+        updatedAt: Date.now(),
+      }
       await this.requireTable('global').put(id, updated)
       const record = toRecord(id, updated)
       this.ctx.emit('memory/changed', { operation: 'status', id, status })
@@ -227,13 +271,52 @@ export class MemoryEngine extends Service {
     }
     const project = this.requireTable('project').get(id)
     if (project !== undefined) {
-      const updated: StoredBlock = { ...project, status, updatedAt: Date.now() }
+      const updated: StoredBlock = {
+        ...project,
+        status,
+        injected: normalizeBlock(project).injected,
+        updatedAt: Date.now(),
+      }
       await this.requireTable('project').put(id, updated)
       const record = toRecord(id, updated)
       this.ctx.emit('memory/changed', { operation: 'status', id, status })
       return record
     }
     throw new Error(`cannot set status of unknown memory '${id}'`)
+  }
+
+  /**
+   * 注入维度开关（0.3.0）：只改 injected，不动审核状态。供 UI 面板
+   * 「常驻注入」开关调用（remote.setInjected）。
+   */
+  async setInjected(id: MemoryId, injected: boolean): Promise<MemoryRecord> {
+    const global = this.requireTable('global').get(id)
+    if (global !== undefined) {
+      const updated: StoredBlock = {
+        ...global,
+        status: normalizeBlock(global).status,
+        injected,
+        updatedAt: Date.now(),
+      }
+      await this.requireTable('global').put(id, updated)
+      const record = toRecord(id, updated)
+      this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
+      return record
+    }
+    const project = this.requireTable('project').get(id)
+    if (project !== undefined) {
+      const updated: StoredBlock = {
+        ...project,
+        status: normalizeBlock(project).status,
+        injected,
+        updatedAt: Date.now(),
+      }
+      await this.requireTable('project').put(id, updated)
+      const record = toRecord(id, updated)
+      this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
+      return record
+    }
+    throw new Error(`cannot set injected of unknown memory '${id}'`)
   }
 
   private allRecords(namespace?: MemoryNamespace): MemoryRecord[] {

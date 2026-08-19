@@ -64,8 +64,10 @@ describe('dsh-memory plugin', () => {
     const record = await ctx.memory.remember({ content: '中文编码规范优先', keywords: ['编码'] })
     expect(ctx.memory.search('编码').map(hit => hit.record.content)).toEqual(['中文编码规范优先'])
 
-    const promoted = await ctx.memory.setStatus(record.id, 'auto')
-    expect(promoted.status).toBe('auto')
+    // 0.3.0：审核通过 = approved；且不改变注入状态（默认不注入）
+    const promoted = await ctx.memory.setStatus(record.id, 'approved')
+    expect(promoted.status).toBe('approved')
+    expect(promoted.injected).toBe(false)
 
     expect(await ctx.memory.forget(record.id)).toBe(true)
     expect(await ctx.memory.forget(record.id)).toBe(false)
@@ -82,7 +84,91 @@ describe('dsh-memory plugin', () => {
     })
 
     await tool?.execute?.({ id: String(record.id) }, {} as never)
-    expect(ctx.memory.list()[0]?.status).toBe('auto')
+    // 0.3.0：审核语义——approved，不再直接变 auto
+    expect(ctx.memory.list()[0]?.status).toBe('approved')
+    expect(ctx.memory.list()[0]?.injected).toBe(false)
+  })
+
+  it('0.3.0: new records default to suggested + injected:false', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'fresh suggestion' })
+    expect(record.status).toBe('suggested')
+    expect(record.injected).toBe(false)
+  })
+
+  it('0.3.0: recall context injects only approved + injected:true', async () => {
+    const { ctx, fiber } = await setup()
+    const a = await ctx.memory.remember({ content: 'inject me' })
+    const b = await ctx.memory.remember({ content: 'approved but not injected' })
+    const c = await ctx.memory.remember({ content: 'still suggested' })
+
+    await ctx.memory.setStatus(a.id, 'approved')
+    await ctx.memory.setStatus(b.id, 'approved')
+    await ctx.memory.setInjected(a.id, true)
+
+    const assembly = await ctx.systemPrompt.assemble()
+    const recall = assembly.contexts.find(context => context.name === 'memory:recall')?.text
+    expect(recall).toContain('inject me')
+    expect(recall).not.toContain('approved but not injected')
+    expect(recall).not.toContain('still suggested')
+
+    await fiber.dispose()
+  })
+
+  it('0.3.0: list filters by injected switch', async () => {
+    const { ctx } = await setup()
+    const a = await ctx.memory.remember({ content: 'always on' })
+    const b = await ctx.memory.remember({ content: 'on demand' })
+    await ctx.memory.setStatus(a.id, 'approved')
+    await ctx.memory.setInjected(a.id, true)
+
+    expect(ctx.memory.list({ injected: true }).map(r => r.content)).toEqual(['always on'])
+    expect(ctx.memory.list({ injected: false }).map(r => r.content)).toEqual(['on demand'])
+    expect(ctx.memory.list({ status: 'approved', injected: true }).map(r => r.content)).toEqual(['always on'])
+    // 非法组合不出现：suggested 不能 injected
+    expect(ctx.memory.list({ status: 'suggested', injected: true })).toEqual([])
+  })
+
+  it('0.3.0: setInjected toggles without touching review status', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'switch me' })
+    await ctx.memory.setStatus(record.id, 'approved')
+
+    const on = await ctx.memory.setInjected(record.id, true)
+    expect(on.status).toBe('approved')
+    expect(on.injected).toBe(true)
+
+    const off = await ctx.memory.setInjected(record.id, false)
+    expect(off.status).toBe('approved')
+    expect(off.injected).toBe(false)
+  })
+
+  it('0.3.0: legacy migration — auto→approved+injected:true, suggest→suggested, missing injected→false', async () => {
+    const { ctx, globalRoot } = await setup()
+    await ctx.memory.remember({ content: 'seed' }) // 保证表存在
+    const file = join(globalRoot, 'memory.json')
+    const unit = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, unknown> }
+    }
+    unit.tables.blocks['legacy-auto'] = {
+      namespace: 'global', status: 'auto', content: 'legacy auto', keywords: [], createdAt: 1, updatedAt: 1,
+    }
+    unit.tables.blocks['legacy-suggest'] = {
+      namespace: 'global', status: 'suggest', content: 'legacy suggest', keywords: [], createdAt: 1, updatedAt: 1,
+    }
+    unit.tables.blocks['legacy-plain'] = {
+      namespace: 'global', status: 'suggested', content: 'legacy plain', keywords: [], createdAt: 1, updatedAt: 1,
+    }
+    writeFileSync(file, JSON.stringify(unit))
+
+    await ctx.memory.reload()
+    const byContent = Object.fromEntries(ctx.memory.list().map(r => [r.content, r]))
+    expect(byContent['legacy auto']?.status).toBe('approved')
+    expect(byContent['legacy auto']?.injected).toBe(true)
+    expect(byContent['legacy suggest']?.status).toBe('suggested')
+    expect(byContent['legacy suggest']?.injected).toBe(false)
+    expect(byContent['legacy plain']?.status).toBe('suggested')
+    expect(byContent['legacy plain']?.injected).toBe(false)
   })
 
   it('reload picks up externally edited storage files (2026-08-19 regression)', async () => {
@@ -106,5 +192,8 @@ describe('dsh-memory plugin', () => {
     await ctx.memory.reload()
     expect(ctx.memory.list().map(r => r.content).sort())
       .toEqual(['externally edited', 'in-process record'])
+    // 外部写入的旧 auto 也走迁移：approved + injected:true
+    expect(ctx.memory.list({ status: 'approved', injected: true }).map(r => r.content))
+      .toEqual(['externally edited'])
   })
 })

@@ -33,7 +33,8 @@ export const inject = ['storage', 'systemPrompt', 'tools']
 interface MemoryToolRecord {
   id: string
   namespace: 'global' | 'project'
-  status: 'suggested' | 'auto' | 'suggest'
+  status: 'suggested' | 'approved'
+  injected: boolean
   content: string
   keywords: string[]
   createdAt: number
@@ -51,7 +52,8 @@ const RECORD_SCHEMA = {
   properties: {
     id: { type: 'string', required: true },
     namespace: { type: 'string', required: true, enum: ['global', 'project'] },
-    status: { type: 'string', required: true, enum: ['suggested', 'auto', 'suggest'] },
+    status: { type: 'string', required: true, enum: ['suggested', 'approved'] },
+    injected: { type: 'boolean', required: true },
     content: { type: 'string', required: true },
     keywords: { type: 'array', required: true, items: { type: 'string' } },
     createdAt: { type: 'number', required: true },
@@ -73,6 +75,7 @@ function recordValue(record: MemoryRecord): MemoryToolRecord {
     id: String(record.id),
     namespace: record.namespace,
     status: record.status,
+    injected: record.injected,
     content: record.content,
     keywords: record.keywords,
     createdAt: record.createdAt,
@@ -84,14 +87,24 @@ function hitValue(hit: MemoryHit): MemoryToolHit {
   return { record: recordValue(hit.record), score: hit.score }
 }
 
+// 0.3.0：审核语义双语（host 侧 GUIDANCE 无法跟随 DSH locale 动态切换，
+// 采用中英双语都写、模型自取——设计文档「风险与注意」）。
 const GUIDANCE =
   'Use memory tools for cross-session preferences, habits, and project conventions. '
+  + '记忆工具用于跨会话的偏好、习惯与项目约定。'
   + 'memory_save always records a suggestion (`suggested`) and never makes it effective itself — '
-  + 'a human confirms it. When earlier context may be relevant, call memory_search to recall it. '
-  + 'Every memory is plaintext and inspectable with memory_list; memory_forget removes one.'
+  + 'a human approves it. memory_save 永远只写入建议（`suggested`），不会自行生效——需人工审核通过。'
+  + 'Approval only marks the content reviewed; whether it is injected every turn is a separate '
+  + 'human-controlled switch (`injected`). 审核通过只代表内容被认可；是否每轮常驻注入由独立的'
+  + '人工开关（`injected`）控制。'
+  + 'When earlier context may be relevant, call memory_search to recall it — reviewable memories '
+  + '(`suggested`) are searchable too. 相关历史上下文可用 memory_search 检索——待审核的记忆也可检索。'
+  + 'Every memory is plaintext and inspectable with memory_list; memory_forget removes one. '
+  + '所有记忆均为明文，可用 memory_list 查看；memory_forget 删除一条。'
 
 function recallText(memory: MemoryEngine): string {
-  const auto = memory.list({ status: 'auto' })
+  // 0.3.0：只注入「已审核 + 常驻开关打开」的记忆（二维模型）
+  const auto = memory.list({ status: 'approved', injected: true })
   if (auto.length === 0) return ''
   const lines = auto.map(record => `- [memory:${String(record.id)}] ${record.content}`)
   return `Remembered preferences and conventions — apply these:\n${lines.join('\n')}`
@@ -147,10 +160,11 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_list',
-    description: 'List every stored memory, optionally filtered by namespace or status. Every memory is plaintext and inspectable.',
+    description: 'List every stored memory, optionally filtered by namespace, status, or injected switch. Every memory is plaintext and inspectable. 列出全部记忆，可按 namespace/status/injected 过滤；均为明文可查。',
     parameters: {
-      namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace.' },
-      status: { type: 'string', enum: ['suggested', 'auto', 'suggest'], description: 'Restrict to one status.' },
+      namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
+      status: { type: 'string', enum: ['suggested', 'approved'], description: 'Restrict to one review status. 限定审核状态（suggested=待审核 / approved=已审核）.' },
+      injected: { type: 'boolean', description: 'Restrict by the persistent-injection switch. 按常驻注入开关过滤.' },
     },
     output: {
       schema: { type: 'array', items: RECORD_SCHEMA },
@@ -160,6 +174,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return Promise.resolve(memory.list({
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
+        ...args.injected === undefined ? {} : { injected: args.injected },
       }).map(recordValue))
     },
     presentCall: () => present('List memories', 'read'),
@@ -167,11 +182,11 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_search',
-    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query.',
+    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. 按关键词检索记忆（含待审核条目）。',
     parameters: {
-      query: { type: 'string', required: true, description: 'Keyword query.' },
-      namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace.' },
-      status: { type: 'string', enum: ['suggested', 'auto', 'suggest'], description: 'Restrict to one status.' },
+      query: { type: 'string', required: true, description: 'Keyword query. 关键词查询.' },
+      namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
+      status: { type: 'string', enum: ['suggested', 'approved'], description: 'Restrict to one review status. 限定审核状态.' },
     },
     output: {
       schema: { type: 'array', items: HIT_SCHEMA },
@@ -204,16 +219,16 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_confirm',
-    description: 'Confirm a suggested memory so it becomes effective (`auto`). Only call this when the human explicitly asks to confirm a memory; never self-promote a suggestion.',
+    description: 'Approve a suggested memory so it is marked human-reviewed (`approved`). Approval does NOT enable persistent injection — whether a memory is injected every turn is a separate human-controlled switch (`injected`). Only call this when the human explicitly asks to approve a memory; never self-promote a suggestion. 将待审核记忆标记为已审核（approved）。审核通过不改变注入状态——是否每轮常驻注入由独立的人工开关（injected）控制。仅在用户明确要求审核某条记忆时调用；模型不得自我提升。',
     parameters: {
-      id: { type: 'string', required: true, description: 'Exact memory id from memory_list.' },
+      id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
     },
     output: {
       schema: RECORD_SCHEMA,
       render: (_args, value) => renderJson(value),
     },
     execute(args, _exec) {
-      return memory.setStatus(args.id as never, 'auto').then(recordValue)
+      return memory.setStatus(args.id as never, 'approved').then(recordValue)
     },
     presentCall: args => present('Confirm memory', 'other', args.id),
   }))

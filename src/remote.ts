@@ -34,10 +34,19 @@ export class MemoryGateway extends TypertRemoteService {
     return this.ctx.memory.search(query, filter)
   }
 
-  /** Confirm a suggested memory so it becomes effective (`auto`). */
+  /** Approve a suggested memory (review status `suggested` → `approved`); does not change injection. */
   @Remote('confirm')
   confirm(id: string): Promise<MemoryRecord> {
-    return this.ctx.memory.setStatus(MemoryId(id), 'auto')
+    return this.ctx.memory.setStatus(MemoryId(id), 'approved')
+  }
+
+  /**
+   * Toggle the persistent-injection switch (`injected`) — the UI panel's
+   * 「常驻注入」 switch; does not change the review status.
+   */
+  @Remote('setInjected')
+  setInjected(id: string, injected: boolean): Promise<MemoryRecord> {
+    return this.ctx.memory.setInjected(MemoryId(id), injected)
   }
 
   /** Delete one stored memory by id. */
