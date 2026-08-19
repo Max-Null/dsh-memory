@@ -8,6 +8,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
+import { createRequire } from 'node:module'
 import { MemoryEngine } from './engine.ts'
 import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
@@ -102,6 +103,32 @@ const GUIDANCE =
   + 'Every memory is plaintext and inspectable with memory_list; memory_forget removes one. '
   + '所有记忆均为明文，可用 memory_list 查看；memory_forget 删除一条。'
 
+// 0.3.2：记忆机制自述（常驻注入）——LLM 每轮都知道本环境有记忆机制。
+// 不落用户存储（storage 里那条过时/可被误改的插件记忆应删除，由本
+// 上下文作为唯一权威来源）；内容随 dsh-memory 发版更新，版本号动态
+// 读取 package.json（"只跟随 dsh-memory 组件发版变动"——用户 2026-08-19）。
+const SELF_VERSION = ((): string => {
+  try {
+    // dist/index.js 位于包根 package.json 同级（../package.json）
+    const require = createRequire(import.meta.url)
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+})()
+
+const SELF_DESCRIPTION =
+  `[记忆系统自述] 当前环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
+  + '工作机制：①记忆以明文 JSON 存储（global→$DSH_HOME/storages、project→项目 .dsh/storages 随 git 分享）；'
+  + '②模型写入即 suggested（待审核），仅人工审核（memory_confirm）后才 approved；'
+  + '③每轮注入 system prompt 的只有「approved + injected 开关打开」的记忆（常驻注入由用户控制，审核≠注入）；'
+  + '④检索用 memory_search（BM25 确定性匹配，含待审核条目，可先评估再引用）；'
+  + '⑤修正过时内容用 memory_update（改动重置待审核，注入开关保留）。'
+  + `可用记忆工具共 6 个：memory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update。`
+  + '使用建议：相关历史上下文先 memory_search 检索再引用；新习惯/约定用 memory_save 写入（落在待审核）。'
+  + '（中/英文同义：This environment has a cross-session memory service; write suggestions via memory_save, retrieve via memory_search, and expect human review before approved.)'
+
 function recallText(memory: MemoryEngine): string {
   // 0.3.0：只注入「已审核 + 常驻开关打开」的记忆（二维模型）
   const auto = memory.list({ status: 'approved', injected: true })
@@ -128,6 +155,14 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     name: 'tool:memory',
     order: 115,
     text: GUIDANCE,
+  })
+
+  // 0.3.2：记忆机制自述——常驻注入（不落用户存储），随发版更新。
+  // order 49 < recall(50)：机制说明在具体记忆内容之前。
+  ctx.systemPrompt.context({
+    name: 'memory:self',
+    order: 49,
+    text: SELF_DESCRIPTION,
   })
 
   ctx.systemPrompt.context({

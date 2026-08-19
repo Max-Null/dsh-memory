@@ -31,6 +31,10 @@ describe('dsh-memory plugin', () => {
     const assembly = await ctx.systemPrompt.assemble()
     expect(assembly.sections.some(section => section.name === 'tool:memory')).toBe(true)
     expect(assembly.contexts.some(context => context.name === 'memory:recall')).toBe(true)
+    // 0.3.2：记忆机制自述常驻上下文（LLM 每轮知道有记忆机制）
+    const self = assembly.contexts.find(context => context.name === 'memory:self')
+    expect(self?.text).toContain('dsh-memory v')
+    expect(self?.text).toContain('memory_update')
 
     await fiber.dispose()
     expect(ctx.tools.get('memory_save')).toBeUndefined()
