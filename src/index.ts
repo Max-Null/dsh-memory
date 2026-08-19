@@ -218,6 +218,27 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
+    name: 'memory_update',
+    description: 'Update the content or keywords of one stored memory (e.g. correcting stale facts). The record is re-marked `suggested` — the human must review it again before it is approved/injected again. 修改一条记忆的内容或关键词（如修正过时信息）。改动后该记忆重置为待审核（suggested），需人工再次审核；常驻注入开关保留原值（审核通过后恢复）。',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
+      content: { type: 'string', description: 'New content; omit to keep current. 新内容；省略则保留现有内容.' },
+      keywords: { type: 'array', items: { type: 'string' }, description: 'New keywords; omit to keep current. 新关键词；省略则保留现有.' },
+    },
+    output: {
+      schema: RECORD_SCHEMA,
+      render: (_args, value) => renderJson(value),
+    },
+    execute(args, _exec) {
+      return memory.update(args.id as never, {
+        ...args.content === undefined ? {} : { content: args.content },
+        ...args.keywords === undefined ? {} : { keywords: args.keywords },
+      }).then(recordValue)
+    },
+    presentCall: args => present('Update memory', 'other', args.id),
+  }))
+
+  ctx.tools.register(defineTool({
     name: 'memory_confirm',
     description: 'Approve a suggested memory so it is marked human-reviewed (`approved`). Approval does NOT enable persistent injection — whether a memory is injected every turn is a separate human-controlled switch (`injected`). Only call this when the human explicitly asks to approve a memory; never self-promote a suggestion. 将待审核记忆标记为已审核（approved）。审核通过不改变注入状态——是否每轮常驻注入由独立的人工开关（injected）控制。仅在用户明确要求审核某条记忆时调用；模型不得自我提升。',
     parameters: {

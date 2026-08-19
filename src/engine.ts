@@ -319,6 +319,42 @@ export class MemoryEngine extends Service {
     throw new Error(`cannot set injected of unknown memory '${id}'`)
   }
 
+  /**
+   * 修改一条记忆的内容/关键词（0.3.1 整理记忆用）。内容被模型改动后
+   * 必须重新人工审核：status 重置为 suggested（自然停止注入——注入仅对
+   * approved 生效）；injected 保留原值（审核通过后注入开关原样恢复）。
+   */
+  async update(id: MemoryId, patch: { content?: string, keywords?: string[] }): Promise<MemoryRecord> {
+    const applyPatch = (block: StoredBlock): StoredBlock => {
+      const normalized = normalizeBlock(block)
+      return {
+        ...block,
+        status: 'suggested',
+        injected: normalized.injected,
+        ...(patch.content === undefined ? {} : { content: patch.content }),
+        ...(patch.keywords === undefined ? {} : { keywords: patch.keywords.map(keyword => keyword.toLowerCase()) }),
+        updatedAt: Date.now(),
+      }
+    }
+    const global = this.requireTable('global').get(id)
+    if (global !== undefined) {
+      const updated = applyPatch(global)
+      await this.requireTable('global').put(id, updated)
+      const record = toRecord(id, updated)
+      this.ctx.emit('memory/changed', { operation: 'status', id, status: 'suggested' })
+      return record
+    }
+    const project = this.requireTable('project').get(id)
+    if (project !== undefined) {
+      const updated = applyPatch(project)
+      await this.requireTable('project').put(id, updated)
+      const record = toRecord(id, updated)
+      this.ctx.emit('memory/changed', { operation: 'status', id, status: 'suggested' })
+      return record
+    }
+    throw new Error(`cannot update unknown memory '${id}'`)
+  }
+
   private allRecords(namespace?: MemoryNamespace): MemoryRecord[] {
     if (namespace === 'project') return this.recordsOf(this.requireTable('project'))
     if (namespace === 'global') return this.recordsOf(this.requireTable('global'))

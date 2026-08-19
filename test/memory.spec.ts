@@ -171,6 +171,38 @@ describe('dsh-memory plugin', () => {
     expect(byContent['legacy plain']?.injected).toBe(false)
   })
 
+  it('0.3.1: update rewrites content/keywords, resets to suggested, keeps injected switch', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'stale fact', keywords: ['old'] })
+    await ctx.memory.setStatus(record.id, 'approved')
+    await ctx.memory.setInjected(record.id, true)
+
+    const updated = await ctx.memory.update(record.id, { content: 'fresh fact', keywords: ['new', 'Key'] })
+    expect(updated.content).toBe('fresh fact')
+    expect(updated.keywords).toEqual(['new', 'key']) // lowercased
+    expect(updated.status).toBe('suggested')          // 重置待审核
+    expect(updated.injected).toBe(true)               // 注入开关保留（审核通过后恢复）
+
+    // 未审核不注入（status 非 approved）
+    expect(ctx.memory.list({ status: 'approved', injected: true }).map(r => r.content)).toEqual([])
+
+    // 只改 content 不动 keywords
+    const partial = await ctx.memory.update(record.id, { content: 'half update' })
+    expect(partial.content).toBe('half update')
+    expect(partial.keywords).toEqual(['new', 'key'])
+  })
+
+  it('0.3.1: memory_update tool exists and rewires to engine.update', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'to update' })
+    const tool = ctx.tools.get('memory_update')
+    expect(tool?.name).toBe('memory_update')
+    const result = await tool?.execute?.({ id: String(record.id), content: 'updated' }, {} as never)
+    expect(result?.content).toBe('updated')
+    expect(result?.status).toBe('suggested')
+    expect(ctx.memory.list()[0]?.content).toBe('updated')
+  })
+
   it('reload picks up externally edited storage files (2026-08-19 regression)', async () => {
     const { ctx, globalRoot } = await setup()
     await ctx.memory.remember({ content: 'in-process record' })
