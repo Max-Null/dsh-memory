@@ -9,7 +9,9 @@
  */
 import { createElement, useEffect, useState, type ReactNode } from 'react'
 
-export const inject = ['slots', 'locale', 'remote', 'remote.memory']
+// 0.3.6：面板数据走 /memory/api（host 自建 HTTP 端点——client 侧
+// remote.memory 依赖 Typert 构建产物，独立包生成不了）。
+export const inject = ['slots', 'locale']
 
 // ---- i18n (DSH zh/en, plugin-center pattern) ----
 type LocaleId = 'zh' | 'en'
@@ -104,20 +106,43 @@ const ssid = {
   },
 } as const
 
-// ---- remote.memory surface (Typert gateway: list/search/confirm/forget/setInjected/reload) ----
-// 0.3.4：所有方法带 cwd（当前会话工作区），engine 按 cwd 路由 project 记忆。
-interface RemoteMemory {
-  list(filter?: { namespace?: string, status?: string, injected?: boolean }, cwd?: string): Promise<Array<{
-    id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[]
-  }>>
-  reload(cwd?: string): Promise<Array<Record<string, unknown>>>
-  confirm(id: string, cwd?: string): Promise<Record<string, unknown>>
-  forget(id: string, cwd?: string): Promise<boolean>
-  setInjected(id: string, injected: boolean, cwd?: string): Promise<Record<string, unknown>>
-  /** 注入预览（0.3.5）：self 自述 + 当前注入的 global approved+injected 记忆。 */
-  injectionPreview(): Promise<{ self: string, injected: Array<{
-    id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[]
-  }> }>
+// ---- /memory/api 数据通道（0.3.6，host 自建端点，panels 模式） ----
+interface MemoryApiRecord {
+  id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[]
+}
+
+async function api(method: string, payload?: Record<string, unknown>): Promise<unknown> {
+  const res = await fetch(`/memory/api/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload ?? {}),
+  })
+  const body = await res.json() as { ok?: boolean, value?: unknown, error?: { message?: string } }
+  if (body.ok !== true) {
+    throw new Error(body.error?.message ?? `${method} failed`)
+  }
+  return body.value
+}
+
+const memoryApi = {
+  list(filter: { namespace?: string, status?: string, injected?: boolean } = {}, cwd?: string): Promise<MemoryApiRecord[]> {
+    return api('list', { filter, ...cwd === undefined ? {} : { cwd } }) as Promise<MemoryApiRecord[]>
+  },
+  reload(cwd?: string): Promise<MemoryApiRecord[]> {
+    return api('reload', { ...cwd === undefined ? {} : { cwd } }) as Promise<MemoryApiRecord[]>
+  },
+  confirm(id: string, cwd?: string): Promise<MemoryApiRecord> {
+    return api('confirm', { id, ...cwd === undefined ? {} : { cwd } }) as Promise<MemoryApiRecord>
+  },
+  forget(id: string, cwd?: string): Promise<boolean> {
+    return api('forget', { id, ...cwd === undefined ? {} : { cwd } }) as Promise<boolean>
+  },
+  setInjected(id: string, injected: boolean, cwd?: string): Promise<MemoryApiRecord> {
+    return api('setInjected', { id, injected, ...cwd === undefined ? {} : { cwd } }) as Promise<MemoryApiRecord>
+  },
+  injectionPreview(): Promise<{ self: string, injected: MemoryApiRecord[] }> {
+    return api('injectionPreview') as Promise<{ self: string, injected: MemoryApiRecord[] }>
+  },
 }
 
 // 预填指令（0.3.1+）：过时内容用 memory_update 修正；工具面自查法。
@@ -125,7 +150,6 @@ const ORGANIZE_PROMPT = '请整理我的记忆库：用 memory_list 查看全部
 
 interface MemoryViewProps {
   visible: boolean
-  remote: RemoteMemory
   /** 当前会话工作区 cwd（侧栏 scope.cwd / 设置页 sessions 快照）；无则工作区记忆为空。 */
   cwd?: string
   ctx: {
@@ -135,18 +159,18 @@ interface MemoryViewProps {
 
 function MemoryView(props: MemoryViewProps): ReactNode {
   const t = useT()
-  const [records, setRecords] = useState<Awaited<ReturnType<RemoteMemory['list']>>>([])
+  const [records, setRecords] = useState<MemoryApiRecord[]>([])
   const [query, setQuery] = useState('')
   const [namespace, setNamespace] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [organizing, setOrganizing] = useState(false)
   // 注入预览（0.3.5）：开发者查看注入到 system prompt 的内容
-  const [preview, setPreview] = useState<Awaited<ReturnType<RemoteMemory['injectionPreview']>> | null>(null)
+  const [preview, setPreview] = useState<{ self: string, injected: MemoryApiRecord[] } | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const togglePreview = async (): Promise<void> => {
     if (previewOpen) { setPreviewOpen(false); return }
     try {
-      setPreview(await props.remote.injectionPreview())
+      setPreview(await memoryApi.injectionPreview())
     } catch {
       setPreview(null)
     }
@@ -154,7 +178,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   }
   const reload = async (): Promise<void> => {
     try {
-      setRecords(await props.remote.list({}, props.cwd))
+      setRecords(await memoryApi.list({}, props.cwd))
     } catch {
       setRecords([])
     }
@@ -163,8 +187,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const refreshFromDisk = async (): Promise<void> => {
     setRefreshing(true)
     try {
-      const value = await props.remote.reload(props.cwd)
-      setRecords(value as Awaited<ReturnType<RemoteMemory['list']>>)
+      setRecords(await memoryApi.reload(props.cwd))
     } catch {
       await reload()
     } finally {
@@ -173,10 +196,10 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   }
   useEffect(() => { if (props.visible) void reload() }, [props.visible])
 
-  const toggleInjected = async (record: Awaited<ReturnType<RemoteMemory['list']>>[number]): Promise<void> => {
+  const toggleInjected = async (record: MemoryApiRecord): Promise<void> => {
     if (record.status !== 'approved') return
     try {
-      await props.remote.setInjected(record.id, !record.injected, props.cwd)
+      await memoryApi.setInjected(record.id, !record.injected, props.cwd)
     } catch {
       /* 失败保持原状态 */
     }
@@ -186,7 +209,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const confirmAll = async (): Promise<void> => {
     const pending = records.filter(record => record.status === 'suggested')
     if (pending.length === 0) return
-    await Promise.all(pending.map(record => props.remote.confirm(record.id, props.cwd).catch(() => null)))
+    await Promise.all(pending.map(record => memoryApi.confirm(record.id, props.cwd).catch(() => null)))
     await reload()
   }
 
@@ -346,12 +369,12 @@ function MemoryView(props: MemoryViewProps): ReactNode {
               record.status === 'suggested'
                 ? createElement('button', {
                   style: ssid.btn,
-                  onClick: () => { void props.remote.confirm(record.id, props.cwd).then(() => reload()) },
+                  onClick: () => { void memoryApi.confirm(record.id, props.cwd).then(() => reload()) },
                 }, t('confirm'))
                 : null,
               createElement('button', {
                 style: ssid.btn,
-                onClick: () => { void props.remote.forget(record.id, props.cwd).then(() => reload()) },
+                onClick: () => { void memoryApi.forget(record.id, props.cwd).then(() => reload()) },
               }, t('forget')),
             ),
           )),
@@ -374,10 +397,9 @@ function currentSessionCwd(ctx: LocaleAwareContext): string | undefined {
 }
 
 /** 设置页包装：渲染时读当前会话 cwd（切换会话后重渲染即跟随）。 */
-function SettingsMemoryView(props: { remote: RemoteMemory, ctx: LocaleAwareContext }): ReactNode {
+function SettingsMemoryView(props: { ctx: LocaleAwareContext }): ReactNode {
   return createElement(MemoryView, {
     visible: true,
-    remote: props.remote,
     ctx: props.ctx,
     cwd: currentSessionCwd(props.ctx),
   })
@@ -406,11 +428,10 @@ export function apply(ctx: unknown): void {
       register?(descriptor: unknown, component: unknown): unknown
     }
   }).slots
-  const remoteMemory = (ctx as { remote?: { memory?: RemoteMemory } }).remote?.memory
 
   // 兜底入口：设置页「记忆」条目——任何环境（无 better-sidebar 也）可管理记忆。
   // 与侧栏 tab 双入口并存（2026-08-19 用户：没有侧栏就没有管理面板的问题）。
-  if (slots?.inject !== undefined && remoteMemory !== undefined) {
+  if (slots?.inject !== undefined) {
     slots.inject('settings.section', () => slots.register({
       name: 'settings.section',
       id: 'dsh-memory',
@@ -418,7 +439,6 @@ export function apply(ctx: unknown): void {
       label: () => STRINGS[localeId].tabMemory,
       inject: () => ({}),
     }, () => createElement(SettingsMemoryView, {
-      remote: remoteMemory,
       ctx: ctx as LocaleAwareContext,
     })))
   }
@@ -431,7 +451,6 @@ export function apply(ctx: unknown): void {
   root.inject(['betterSidebar'], (sidebarCtx: unknown) => {
     const service = (sidebarCtx as { betterSidebar?: { registerTab?(descriptor: unknown): unknown } }).betterSidebar
     if (service?.registerTab === undefined) return
-    if (remoteMemory === undefined) return
     const tabCtx = ctx as LocaleAwareContext
     service.registerTab({
       id: '@max-null/dsh-memory:memory',
@@ -440,7 +459,6 @@ export function apply(ctx: unknown): void {
       single: true,
       component: ({ visible, scope }: { visible: boolean, scope?: { cwd?: string } }) => createElement(MemoryView, {
         visible,
-        remote: remoteMemory,
         // 侧栏场景：当前会话工作区 cwd（TabComponentProps.scope）
         cwd: scope?.cwd,
         ctx: tabCtx as MemoryViewProps['ctx'],

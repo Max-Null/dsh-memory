@@ -11,6 +11,7 @@ import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { MemoryEngine } from './engine.ts'
 import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
+import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
 
 export { MemoryEngine } from './engine.ts'
@@ -28,7 +29,7 @@ export { MemoryId } from './engine.ts'
 export { bm25Scores, tokenize } from './bm25.ts'
 
 export const name = 'dsh-memory'
-export const inject = ['storage', 'systemPrompt', 'tools']
+export const inject = ['storage', 'systemPrompt', 'tools', 'webServer', 'webRuntime']
 
 /** Compact model-facing record; the branded id serializes as its string. */
 interface MemoryToolRecord {
@@ -130,6 +131,8 @@ function present(title: string, kind: 'read' | 'other', rawInput?: unknown): Gen
 export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> {
   await ctx.plugin(MemoryEngine, config)
   await ctx.plugin(MemoryGateway)
+  // 0.3.6：自带面板数据通道（HTTP，独立包无需 Typert 构建产物）
+  mountMemoryApi(ctx)
   const memory = ctx.get('memory')
   if (memory === undefined) throw new Error('memory engine failed to register')
 

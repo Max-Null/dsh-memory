@@ -31,7 +31,7 @@ __export(index_exports, {
 });
 module.exports = __toCommonJS(index_exports);
 var import_react = require("react");
-var inject = ["slots", "locale", "remote", "remote.memory"];
+var inject = ["slots", "locale"];
 var STRINGS = {
   zh: {
     tabMemory: "\u8BB0\u5FC6",
@@ -127,6 +127,38 @@ var ssid = {
     cursor: "pointer"
   }
 };
+async function api(method, payload) {
+  const res = await fetch(`/memory/api/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload ?? {})
+  });
+  const body = await res.json();
+  if (body.ok !== true) {
+    throw new Error(body.error?.message ?? `${method} failed`);
+  }
+  return body.value;
+}
+var memoryApi = {
+  list(filter = {}, cwd) {
+    return api("list", { filter, ...cwd === void 0 ? {} : { cwd } });
+  },
+  reload(cwd) {
+    return api("reload", { ...cwd === void 0 ? {} : { cwd } });
+  },
+  confirm(id, cwd) {
+    return api("confirm", { id, ...cwd === void 0 ? {} : { cwd } });
+  },
+  forget(id, cwd) {
+    return api("forget", { id, ...cwd === void 0 ? {} : { cwd } });
+  },
+  setInjected(id, injected, cwd) {
+    return api("setInjected", { id, injected, ...cwd === void 0 ? {} : { cwd } });
+  },
+  injectionPreview() {
+    return api("injectionPreview");
+  }
+};
 var ORGANIZE_PROMPT = "\u8BF7\u6574\u7406\u6211\u7684\u8BB0\u5FC6\u5E93\uFF1A\u7528 memory_list \u67E5\u770B\u5168\u90E8\u8BB0\u5FC6\uFF0C\u5408\u5E76\u91CD\u590D\u6216\u53EF\u5F52\u5E76\u7684\u6761\u76EE\uFF0C\u7CBE\u7B80\u5197\u957F\u5185\u5BB9\uFF0C\u4E3A\u6BCF\u6761\u8865\u5145\u6216\u4FEE\u6B63 keywords\uFF1B\u5BF9\u8FC7\u65F6\u3001\u9519\u8BEF\u6216\u5DF2\u53D8\u5316\u7684\u5185\u5BB9\u7528 memory_update \u4FEE\u6B63\uFF08\u4F1A\u91CD\u7F6E\u4E3A\u5F85\u5BA1\u6838\uFF09\uFF0C\u9700\u8981\u5220\u9664\u7684\u7528 memory_forget\uFF0C\u9700\u8981\u65B0\u589E\u7684\u7528 memory_save\u3002\u5224\u65AD\u5185\u5BB9\u662F\u5426\u8FC7\u65F6\u7684\u65B9\u6CD5\uFF1A\u628A\u8BB0\u5FC6\u91CC\u63D0\u5230\u7684\u5DE5\u5177\u540D/\u6570\u91CF\u4E0E\u4F60\u5F53\u524D\u5B9E\u9645\u53EF\u7528\u7684\u8BB0\u5FC6\u5DE5\u5177\u5BF9\u7167\u2014\u2014\u4F60\u5F53\u524D\u53EF\u7528\uFF1Amemory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update\uFF08\u5171 6 \u4E2A\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u4E2D\u7684\u5DE5\u5177\u5217\u8868\u3001\u6570\u91CF\u3001\u6D41\u7A0B\u4E0E\u6B64\u4E0D\u7B26\u5373\u4E3A\u8FC7\u65F6\uFF0C\u7528 memory_update \u4FEE\u6B63\u3002\u6539\u52A8\u5168\u90E8\u843D\u5728 suggested \u7B49\u5F85\u5BA1\u6838\uFF08\u4E0D\u8981\u8C03\u7528 memory_confirm\uFF09\uFF0C\u5B8C\u6210\u540E\u7528\u4E00\u53E5\u8BDD\u6C47\u62A5\u6574\u7406\u7ED3\u679C\u3002";
 function MemoryView(props) {
   const t = useT();
@@ -143,7 +175,7 @@ function MemoryView(props) {
       return;
     }
     try {
-      setPreview(await props.remote.injectionPreview());
+      setPreview(await memoryApi.injectionPreview());
     } catch {
       setPreview(null);
     }
@@ -151,7 +183,7 @@ function MemoryView(props) {
   };
   const reload = async () => {
     try {
-      setRecords(await props.remote.list({}, props.cwd));
+      setRecords(await memoryApi.list({}, props.cwd));
     } catch {
       setRecords([]);
     }
@@ -159,8 +191,7 @@ function MemoryView(props) {
   const refreshFromDisk = async () => {
     setRefreshing(true);
     try {
-      const value = await props.remote.reload(props.cwd);
-      setRecords(value);
+      setRecords(await memoryApi.reload(props.cwd));
     } catch {
       await reload();
     } finally {
@@ -173,7 +204,7 @@ function MemoryView(props) {
   const toggleInjected = async (record) => {
     if (record.status !== "approved") return;
     try {
-      await props.remote.setInjected(record.id, !record.injected, props.cwd);
+      await memoryApi.setInjected(record.id, !record.injected, props.cwd);
     } catch {
     }
     await reload();
@@ -181,7 +212,7 @@ function MemoryView(props) {
   const confirmAll = async () => {
     const pending = records.filter((record) => record.status === "suggested");
     if (pending.length === 0) return;
-    await Promise.all(pending.map((record) => props.remote.confirm(record.id, props.cwd).catch(() => null)));
+    await Promise.all(pending.map((record) => memoryApi.confirm(record.id, props.cwd).catch(() => null)));
     await reload();
   };
   const organize = async () => {
@@ -363,13 +394,13 @@ function MemoryView(props) {
           record.status === "suggested" ? (0, import_react.createElement)("button", {
             style: ssid.btn,
             onClick: () => {
-              void props.remote.confirm(record.id, props.cwd).then(() => reload());
+              void memoryApi.confirm(record.id, props.cwd).then(() => reload());
             }
           }, t("confirm")) : null,
           (0, import_react.createElement)("button", {
             style: ssid.btn,
             onClick: () => {
-              void props.remote.forget(record.id, props.cwd).then(() => reload());
+              void memoryApi.forget(record.id, props.cwd).then(() => reload());
             }
           }, t("forget"))
         )
@@ -390,7 +421,6 @@ function currentSessionCwd(ctx) {
 function SettingsMemoryView(props) {
   return (0, import_react.createElement)(MemoryView, {
     visible: true,
-    remote: props.remote,
     ctx: props.ctx,
     cwd: currentSessionCwd(props.ctx)
   });
@@ -404,8 +434,7 @@ function apply(ctx) {
     adoptLocale(snap?.active);
   });
   const slots = ctx.slots;
-  const remoteMemory = ctx.remote?.memory;
-  if (slots?.inject !== void 0 && remoteMemory !== void 0) {
+  if (slots?.inject !== void 0) {
     slots.inject("settings.section", () => slots.register({
       name: "settings.section",
       id: "dsh-memory",
@@ -413,7 +442,6 @@ function apply(ctx) {
       label: () => STRINGS[localeId].tabMemory,
       inject: () => ({})
     }, () => (0, import_react.createElement)(SettingsMemoryView, {
-      remote: remoteMemory,
       ctx
     })));
   }
@@ -422,7 +450,6 @@ function apply(ctx) {
   root.inject(["betterSidebar"], (sidebarCtx) => {
     const service = sidebarCtx.betterSidebar;
     if (service?.registerTab === void 0) return;
-    if (remoteMemory === void 0) return;
     const tabCtx = ctx;
     service.registerTab({
       id: "@max-null/dsh-memory:memory",
@@ -431,7 +458,6 @@ function apply(ctx) {
       single: true,
       component: ({ visible, scope }) => (0, import_react.createElement)(MemoryView, {
         visible,
-        remote: remoteMemory,
         // 侧栏场景：当前会话工作区 cwd（TabComponentProps.scope）
         cwd: scope?.cwd,
         ctx: tabCtx

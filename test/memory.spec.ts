@@ -14,6 +14,9 @@ async function setup() {
   await ctx.plugin(Storage)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRegistry)
+  // 0.3.6：面板端点需要 webServer/webRuntime（测试环境 mock）
+  ctx.provide('webServer' as never, { register: () => () => {} } as never)
+  ctx.provide('webRuntime' as never, { trustedHosts: [] } as never)
   const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-global-'))
   // 0.3.4：project 记忆按工作区 cwd 路由——临时目录充当两个工作区
   const workspaceA = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-a-'))
