@@ -159,6 +159,20 @@ export function mountMemoryApi(ctx: Context): void {
       if (typeof record?.injected !== 'boolean') throw new MemoryApiError('bad-request', 'missing or invalid "injected"')
       return memory.setInjected(record.id as never, record.injected, cwdOf(record))
     },
+    'update': (payload) => {
+      const memory = ctx.get('memory') as MemoryEngine | undefined
+      if (memory === undefined) throw new MemoryApiError('service-unavailable', 'memory service unavailable', 503)
+      const record = payload as Record<string, unknown> | null
+      if (typeof record?.id !== 'string') throw new MemoryApiError('bad-request', 'missing or invalid "id"')
+      if (record.content !== undefined && typeof record.content !== 'string') throw new MemoryApiError('bad-request', 'invalid "content"')
+      if (record.keywords !== undefined && !(Array.isArray(record.keywords) && record.keywords.every(k => typeof k === 'string'))) {
+        throw new MemoryApiError('bad-request', 'invalid "keywords"')
+      }
+      return memory.update(record.id as never, {
+        ...record.content === undefined ? {} : { content: record.content },
+        ...record.keywords === undefined ? {} : { keywords: record.keywords },
+      }, cwdOf(record))
+    },
     'injectionPreview': () => {
       const memory = ctx.get('memory') as MemoryEngine | undefined
       if (memory === undefined) throw new MemoryApiError('service-unavailable', 'memory service unavailable', 503)

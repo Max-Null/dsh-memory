@@ -211,8 +211,11 @@ const memoryApi = {
   },
 }
 
-// 预填指令（0.3.1+）：过时内容用 memory_update 修正；工具面自查法。
-const ORGANIZE_PROMPT = '请整理我的记忆库：用 memory_list 查看全部记忆，合并重复或可归并的条目，精简冗长内容，为每条补充或修正 keywords；对过时、错误或已变化的内容用 memory_update 修正（会重置为待审核），需要删除的用 memory_forget，需要新增的用 memory_save。判断内容是否过时的方法：把记忆里提到的工具名/数量与你当前实际可用的记忆工具对照——你当前可用：memory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update（共 6 个）；若记忆中的工具列表、数量、流程与此不符即为过时，用 memory_update 修正。改动全部落在 suggested 等待审核（不要调用 memory_confirm），完成后用一句话汇报整理结果。'
+// 预填指令（0.3.6）：过时内容用 memory_update 修正（重置待审核）；
+// 判断过时的方法 = 记忆里的工具名/数量与当前实际可用工具对照。
+// 整理规则明确化（用户 2026-08-19）：同类习惯合并；与 memory:self 重复的
+// 插件介绍删除——LLM 保守默认"不合并/不删"，必须显式规则。
+const ORGANIZE_PROMPT = '请整理我的记忆库：用 memory_list 查看全部记忆。整理规则（必须执行）：①同类条目合并——工作习惯/约定类多条合并为一条（内容用 ①②③ 并列，避免碎片化）；②与「[记忆系统自述]」（你上下文中的记忆机制说明）内容重复的插件介绍条目（如 dsh-memory 插件发布信息）应删除——机制说明已由系统常驻提供，无需用户存储；③对过时、错误或已变化的内容用 memory_update 修正（会重置为待审核）；④精简冗长内容，为每条补充或修正 keywords；⑤需要删除的用 memory_forget，需要新增的用 memory_save。判断内容是否过时的方法：把记忆里提到的工具名/数量与你当前实际可用的记忆工具对照——你当前可用：memory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update（共 6 个）；若记忆中的工具列表、数量、流程与此不符即为过时，用 memory_update 修正。改动全部落在 suggested 等待审核（不要调用 memory_confirm），完成后用一句话汇报整理结果。'
 
 interface MemoryViewProps {
   visible: boolean
