@@ -18,6 +18,28 @@ export const inject = ['slots', 'locale']
 // quoted token until closing quote. Same subset dsh-skill-mcp-center uses.
 const FILE_REF_RE = /@("([^"]+)"|([^\s"@]+))/g
 interface FileRefToken { raw: string; path: string }
+/**
+ * Whether a bare @token looks like a file path worth linking. Pure package
+ * names (@scope/name), bare words, and domain-like tokens must not render as
+ * clickable — they are not files. Quoted forms (@"...") always qualify
+ * (explicit user intent).
+ */
+function looksLikePath(path: string): boolean {
+  if (path.includes('\\')) return true
+  if (path.startsWith('./') || path.startsWith('../') || path.startsWith('/') || path.startsWith('~/')) return true
+  if (path.includes('/')) {
+    if (!path.includes('.')) {
+      const segments = path.split('/')
+      return segments.length > 2
+    }
+    return true
+  }
+  const m = /\.([A-Za-z0-9]{1,6})$/.exec(path)
+  if (m === null) return false
+  const ext = m[1]!.toLowerCase()
+  const COMMON_EXTS = new Set(['md', 'txt', 'ts', 'tsx', 'js', 'mjs', 'cjs', 'json', 'yml', 'yaml', 'toml', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'css', 'scss', 'html', 'py', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'sh', 'ps1', 'bat', 'exe', 'zip', 'tar', 'gz', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'log', 'env', 'lock', 'csv', 'xml', 'sql', 'db', 'wasm'])
+  return COMMON_EXTS.has(ext)
+}
 function splitFileRefs(text: string): Array<{ kind: 'text'; text: string } | { kind: 'ref'; ref: FileRefToken }> {
   const parts: Array<{ kind: 'text'; text: string } | { kind: 'ref'; ref: FileRefToken }> = []
   let last = 0
@@ -25,7 +47,13 @@ function splitFileRefs(text: string): Array<{ kind: 'text'; text: string } | { k
   FILE_REF_RE.lastIndex = 0
   while ((m = FILE_REF_RE.exec(text)) !== null) {
     if (m.index > last) parts.push({ kind: 'text', text: text.slice(last, m.index) })
-    parts.push({ kind: 'ref', ref: { raw: m[0], path: m[2] ?? m[3]! } })
+    const path = m[2] ?? m[3]!
+    // Quoted forms always count; bare tokens must look like paths.
+    if (m[2] !== undefined || looksLikePath(path)) {
+      parts.push({ kind: 'ref', ref: { raw: m[0], path } })
+    } else {
+      parts.push({ kind: 'text', text: m[0] })
+    }
     last = m.index + m[0].length
   }
   if (last < text.length) parts.push({ kind: 'text', text: text.slice(last) })

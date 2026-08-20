@@ -33,6 +33,22 @@ module.exports = __toCommonJS(index_exports);
 var import_react = require("react");
 var inject = ["slots", "locale"];
 var FILE_REF_RE = /@("([^"]+)"|([^\s"@]+))/g;
+function looksLikePath(path) {
+  if (path.includes("\\")) return true;
+  if (path.startsWith("./") || path.startsWith("../") || path.startsWith("/") || path.startsWith("~/")) return true;
+  if (path.includes("/")) {
+    if (!path.includes(".")) {
+      const segments = path.split("/");
+      return segments.length > 2;
+    }
+    return true;
+  }
+  const m = /\.([A-Za-z0-9]{1,6})$/.exec(path);
+  if (m === null) return false;
+  const ext = m[1].toLowerCase();
+  const COMMON_EXTS = /* @__PURE__ */ new Set(["md", "txt", "ts", "tsx", "js", "mjs", "cjs", "json", "yml", "yaml", "toml", "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "css", "scss", "html", "py", "rs", "go", "java", "c", "h", "cpp", "sh", "ps1", "bat", "exe", "zip", "tar", "gz", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "log", "env", "lock", "csv", "xml", "sql", "db", "wasm"]);
+  return COMMON_EXTS.has(ext);
+}
 function splitFileRefs(text) {
   const parts = [];
   let last = 0;
@@ -40,7 +56,12 @@ function splitFileRefs(text) {
   FILE_REF_RE.lastIndex = 0;
   while ((m = FILE_REF_RE.exec(text)) !== null) {
     if (m.index > last) parts.push({ kind: "text", text: text.slice(last, m.index) });
-    parts.push({ kind: "ref", ref: { raw: m[0], path: m[2] ?? m[3] } });
+    const path = m[2] ?? m[3];
+    if (m[2] !== void 0 || looksLikePath(path)) {
+      parts.push({ kind: "ref", ref: { raw: m[0], path } });
+    } else {
+      parts.push({ kind: "text", text: m[0] });
+    }
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push({ kind: "text", text: text.slice(last) });
