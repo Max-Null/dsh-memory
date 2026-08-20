@@ -13,6 +13,49 @@ import { createElement, useEffect, useState, type ReactNode } from 'react'
 // remote.memory 依赖 Typert 构建产物，独立包生成不了）。
 export const inject = ['slots', 'locale']
 
+// ---- file reference rendering（0.3.9：记忆内容 @路径 可点击，rc.8 语法子集） ----
+// Match @path and @"path with spaces" mentions; bare token until whitespace,
+// quoted token until closing quote. Same subset dsh-skill-mcp-center uses.
+const FILE_REF_RE = /@("([^"]+)"|([^\s"@]+))/g
+interface FileRefToken { raw: string; path: string }
+function splitFileRefs(text: string): Array<{ kind: 'text'; text: string } | { kind: 'ref'; ref: FileRefToken }> {
+  const parts: Array<{ kind: 'text'; text: string } | { kind: 'ref'; ref: FileRefToken }> = []
+  let last = 0
+  let m: RegExpExecArray | null
+  FILE_REF_RE.lastIndex = 0
+  while ((m = FILE_REF_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push({ kind: 'text', text: text.slice(last, m.index) })
+    parts.push({ kind: 'ref', ref: { raw: m[0], path: m[2] ?? m[3]! } })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push({ kind: 'text', text: text.slice(last) })
+  return parts
+}
+/** better-sidebar openFile, wired when the peer is present (0.3.9). */
+let openFileRef: ((path: string, title?: string) => void) | null = null
+/** Memory content with @-mentions rendered as clickable references. */
+function ContentWithRefs({ text, style }: { text: string; style?: Record<string, string> }): ReactNode {
+  const parts = splitFileRefs(text)
+  if (parts.every(p => p.kind === 'text')) return text
+  return createElement('span', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all' } },
+    parts.map((p, i) => p.kind === 'text'
+      ? createElement('span', { key: i, style }, p.text)
+      : createElement('span', {
+        key: i,
+        title: 'open file',
+        onClick: () => { openFileRef?.(p.ref.path, p.ref.path) },
+        style: {
+          ...style,
+          cursor: 'pointer',
+          borderRadius: 4,
+          padding: '0 3px',
+          background: 'var(--dsw-alias-state-business-tertiary, rgba(79,195,247,.16))',
+          color: 'var(--dsw-alias-state-business-primary, #4FC3F7)',
+          textDecoration: 'underline dotted',
+        },
+      }, p.ref.raw)))
+}
+
 // ---- 大脑图标（Lucide brain，设置页 nav + 侧栏 tab 共用） ----
 const BRAIN_PATHS = [
   'M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z',
@@ -418,7 +461,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
             ),
           ),
           group.items.map(record => createElement('div', { key: record.id, style: ssid.card },
-            createElement('div', { style: ssid.text }, record.content),
+            createElement('div', { style: ssid.text }, ContentWithRefs({ text: record.content })),
             // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
             record.keywords !== undefined && record.keywords.length > 0
               ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 } },
@@ -533,8 +576,12 @@ export function apply(ctx: unknown): void {
   }
   if (root.inject === undefined) return
   root.inject(['betterSidebar'], (sidebarCtx: unknown) => {
-    const service = (sidebarCtx as { betterSidebar?: { registerTab?(descriptor: unknown): unknown } }).betterSidebar
+    const service = (sidebarCtx as { betterSidebar?: { registerTab?(descriptor: unknown): unknown; openFile?(scope: unknown, path: string, title?: string): unknown } }).betterSidebar
     if (service?.registerTab === undefined) return
+    // 0.3.9：记忆内容 @路径 点击经 better-sidebar 文件 tab 打开。
+    if (typeof service.openFile === 'function') {
+      openFileRef = (path: string, title?: string) => { service.openFile?.({}, path, title) }
+    }
     const tabCtx = ctx as LocaleAwareContext
     service.registerTab({
       id: '@max-null/dsh-memory:memory',

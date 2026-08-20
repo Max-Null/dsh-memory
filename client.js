@@ -32,6 +32,45 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 var import_react = require("react");
 var inject = ["slots", "locale"];
+var FILE_REF_RE = /@("([^"]+)"|([^\s"@]+))/g;
+function splitFileRefs(text) {
+  const parts = [];
+  let last = 0;
+  let m;
+  FILE_REF_RE.lastIndex = 0;
+  while ((m = FILE_REF_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push({ kind: "text", text: text.slice(last, m.index) });
+    parts.push({ kind: "ref", ref: { raw: m[0], path: m[2] ?? m[3] } });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push({ kind: "text", text: text.slice(last) });
+  return parts;
+}
+var openFileRef = null;
+function ContentWithRefs({ text, style }) {
+  const parts = splitFileRefs(text);
+  if (parts.every((p) => p.kind === "text")) return text;
+  return (0, import_react.createElement)(
+    "span",
+    { style: { whiteSpace: "pre-wrap", wordBreak: "break-all" } },
+    parts.map((p, i) => p.kind === "text" ? (0, import_react.createElement)("span", { key: i, style }, p.text) : (0, import_react.createElement)("span", {
+      key: i,
+      title: "open file",
+      onClick: () => {
+        openFileRef?.(p.ref.path, p.ref.path);
+      },
+      style: {
+        ...style,
+        cursor: "pointer",
+        borderRadius: 4,
+        padding: "0 3px",
+        background: "var(--dsw-alias-state-business-tertiary, rgba(79,195,247,.16))",
+        color: "var(--dsw-alias-state-business-primary, #4FC3F7)",
+        textDecoration: "underline dotted"
+      }
+    }, p.ref.raw))
+  );
+}
 var BRAIN_PATHS = [
   "M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z",
   "M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"
@@ -428,7 +467,7 @@ function MemoryView(props) {
       group.items.map((record) => (0, import_react.createElement)(
         "div",
         { key: record.id, style: ssid.card },
-        (0, import_react.createElement)("div", { style: ssid.text }, record.content),
+        (0, import_react.createElement)("div", { style: ssid.text }, ContentWithRefs({ text: record.content })),
         // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
         record.keywords !== void 0 && record.keywords.length > 0 ? (0, import_react.createElement)(
           "div",
@@ -527,6 +566,11 @@ function apply(ctx) {
   root.inject(["betterSidebar"], (sidebarCtx) => {
     const service = sidebarCtx.betterSidebar;
     if (service?.registerTab === void 0) return;
+    if (typeof service.openFile === "function") {
+      openFileRef = (path, title) => {
+        service.openFile?.({}, path, title);
+      };
+    }
     const tabCtx = ctx;
     service.registerTab({
       id: "@max-null/dsh-memory:memory",
