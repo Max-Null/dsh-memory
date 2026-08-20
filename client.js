@@ -37,11 +37,7 @@ function looksLikePath(path) {
   if (path.includes("\\")) return true;
   if (path.startsWith("./") || path.startsWith("../") || path.startsWith("/") || path.startsWith("~/")) return true;
   if (path.includes("/")) {
-    if (!path.includes(".")) {
-      const segments = path.split("/");
-      return segments.length > 2;
-    }
-    return true;
+    return path.includes(".");
   }
   const m = /\.([A-Za-z0-9]{1,6})$/.exec(path);
   if (m === null) return false;

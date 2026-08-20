@@ -19,20 +19,18 @@ export const inject = ['slots', 'locale']
 const FILE_REF_RE = /@("([^"]+)"|([^\s"@]+))/g
 interface FileRefToken { raw: string; path: string }
 /**
- * Whether a bare @token looks like a file path worth linking. Pure package
- * names (@scope/name), bare words, and domain-like tokens must not render as
- * clickable — they are not files. Quoted forms (@"...") always qualify
- * (explicit user intent).
+ * Whether a bare @token looks like a file path worth linking. Package names
+ * (@scope/name, @scope/name/subpath), bare words, domain-like tokens, and
+ * extension-less directory chains must not render as clickable — they are not
+ * reliably files. Quoted forms (@"...") always qualify (explicit user intent).
  */
 function looksLikePath(path: string): boolean {
   if (path.includes('\\')) return true
   if (path.startsWith('./') || path.startsWith('../') || path.startsWith('/') || path.startsWith('~/')) return true
   if (path.includes('/')) {
-    if (!path.includes('.')) {
-      const segments = path.split('/')
-      return segments.length > 2
-    }
-    return true
+    // Any dotted segment (README.md, dist/main.js) marks a file path; pure
+    // package names and extension-less directory chains stay plain text.
+    return path.includes('.')
   }
   const m = /\.([A-Za-z0-9]{1,6})$/.exec(path)
   if (m === null) return false
