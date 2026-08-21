@@ -223,7 +223,18 @@ function useT(): (key: StringKey, vars?: Record<string, unknown>) => string {
 // ---- inline-styled primitives (no CSS build step) ----
 const ssid = {
   accent: '#4FC3F7',
-  wrap: { display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', overflowY: 'auto', height: '100%', boxSizing: 'border-box' },
+  // Root column: toolbar + namespace tabs stay pinned at the top (flex:none);
+  // only the content area below scrolls (2026-08-22 用户: tab 与功能不应随滚动)。
+  wrap: { display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', height: '100%', boxSizing: 'border-box' },
+  header: { display: 'flex', flexDirection: 'column', gap: 8, flex: 'none' },
+  content: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginRight: -4, paddingRight: 4 },
+  // 计数徽标（醒目：accent 底 + 白色数字）。
+  count: {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    minWidth: 18, height: 18, padding: '0 6px', borderRadius: 9,
+    background: 'var(--dsw-alias-state-business-primary, #4FC3F7)',
+    color: '#fff', fontSize: 11, fontWeight: 600, lineHeight: 1,
+  },
   card: {
     background: 'var(--dsw-alias-bg-layer-1, #131a26)',
     border: '1px solid var(--dsw-alias-border-l2, #1e2836)',
@@ -398,6 +409,11 @@ function MemoryView(props: MemoryViewProps): ReactNode {
     : namespace === 'workspace' ? records.filter(record => record.namespace === 'project')
       : records.filter(record => record.namespace === 'global')
   const filtered = byNs.filter(record => q === '' || record.content.toLowerCase().includes(q))
+  const nsCounts = {
+    all: records.length,
+    global: records.filter(record => record.namespace === 'global').length,
+    workspace: records.filter(record => record.namespace === 'project').length,
+  }
   const groups: Array<{ key: string, label: string, items: typeof filtered }> = [
     { key: 'pending', label: t('groupPending'), items: filtered.filter(record => record.status === 'suggested') },
     { key: 'ondemand', label: t('groupOnDemand'), items: filtered.filter(record => record.status === 'approved' && !record.injected) },
@@ -405,129 +421,138 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   ].filter(group => group.items.length > 0)
 
   return createElement('div', { style: ssid.wrap },
-    createElement('div', { style: { display: 'flex', gap: 6 } },
-      createElement('button', {
-        type: 'button',
-        title: t('organizeMemory'),
-        onClick: () => { void organize() },
-        disabled: organizing,
-        style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent },
-      }, organizing ? '…' : t('organizeMemory')),
-      createElement('button', {
-        type: 'button',
-        title: t('injectPreview'),
-        onClick: () => { void togglePreview() },
-        style: { ...ssid.btn, ...(previewOpen ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
-      }, t('injectPreview')),
-      createElement('input', {
-        value: query,
-        onChange: (event: { target: { value: string } }) => { setQuery(event.target.value) },
-        placeholder: t('memorySearch'),
-        style: {
-          flex: 1, padding: '6px 10px', fontSize: 12.5, boxSizing: 'border-box',
-          background: 'var(--dsw-alias-bg-layer-1, #0f141d)',
-          border: '1px solid var(--dsw-alias-border-l2, #1e2836)', borderRadius: 8,
-          color: 'var(--dsw-alias-label-primary, #d8e0ea)', outline: 'none',
-        },
-      }),
-      createElement('button', {
-        type: 'button',
-        title: t('refresh'),
-        onClick: () => { void refreshFromDisk() },
-        disabled: refreshing,
-        style: ssid.btn,
-      }, refreshing ? '…' : '↻'),
+    createElement('div', { style: ssid.header },
+      createElement('div', { style: { display: 'flex', gap: 6 } },
+        createElement('button', {
+          type: 'button',
+          title: t('organizeMemory'),
+          onClick: () => { void organize() },
+          disabled: organizing,
+          style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent },
+        }, organizing ? '…' : t('organizeMemory')),
+        createElement('button', {
+          type: 'button',
+          title: t('injectPreview'),
+          onClick: () => { void togglePreview() },
+          style: { ...ssid.btn, ...(previewOpen ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
+        }, t('injectPreview')),
+        createElement('input', {
+          value: query,
+          onChange: (event: { target: { value: string } }) => { setQuery(event.target.value) },
+          placeholder: t('memorySearch'),
+          style: {
+            flex: 1, padding: '6px 10px', fontSize: 12.5, boxSizing: 'border-box',
+            background: 'var(--dsw-alias-bg-layer-1, #0f141d)',
+            border: '1px solid var(--dsw-alias-border-l2, #1e2836)', borderRadius: 8,
+            color: 'var(--dsw-alias-label-primary, #d8e0ea)', outline: 'none',
+          },
+        }),
+        createElement('button', {
+          type: 'button',
+          title: t('refresh'),
+          onClick: () => { void refreshFromDisk() },
+          disabled: refreshing,
+          style: ssid.btn,
+        }, refreshing ? '…' : '↻'),
+      ),
+      createElement('div', { style: { display: 'flex', gap: 4 } },
+        ([null, 'global', 'workspace'] as Array<string | null>).map(ns => {
+          const label = ns === null ? t('allNamespaces') : ns === 'global' ? t('nsGlobal') : t('nsWorkspace')
+          const count = ns === null ? nsCounts.all : ns === 'global' ? nsCounts.global : nsCounts.workspace
+          return createElement('button', {
+            key: ns ?? 'all',
+            onClick: () => { setNamespace(ns) },
+            style: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, ...ssid.btn, ...(namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
+          }, createElement('span', null, label), createElement('span', { style: ssid.count }, String(count)))
+        }),
+      ),
     ),
-    createElement('div', { style: { display: 'flex', gap: 4 } },
-      ([null, 'global', 'workspace'] as Array<string | null>).map(ns => createElement('button', {
-        key: ns ?? 'all',
-        onClick: () => { setNamespace(ns) },
-        style: { flex: 1, ...ssid.btn, ...(namespace === ns ? { color: ssid.accent, borderColor: ssid.accent } : {}) },
-      }, ns === null ? t('allNamespaces') : ns === 'global' ? t('nsGlobal') : t('nsWorkspace'))),
-    ),
-    // 注入预览（开发者）：self 自述 + 当前注入的记忆 + 上下文占用统计
-    previewOpen && preview !== null
-      ? createElement('div', { style: { ...ssid.card, display: 'flex', flexDirection: 'column', gap: 6 } },
-        createElement('div', { style: { ...ssid.muted, fontSize: 10.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-          createElement('span', null, t('contextUsage')),
-          createElement('span', null, (() => {
-            const selfChars = preview.self.length
-            const injectedChars = preview.injected.reduce((sum, record) => sum + record.content.length + record.keywords.join('').length, 0)
-            const total = selfChars + injectedChars
-            // 粗估（中英混合，标注 ≈）：中文约 1.5 字符/token，英文约 4 字符/token
-            const tokens = Math.ceil(total / 2)
-            return `${selfChars}+${injectedChars} 字符 ≈ ${tokens} token`
-          })()),
-        ),
-        createElement('div', { style: { ...ssid.text, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, preview.self),
-        preview.injected.length === 0
-          ? createElement('div', { style: ssid.muted }, t('empty'))
-          : preview.injected.map(record => createElement('div', { key: record.id, style: { ...ssid.muted, fontSize: 11 } },
-            `- [memory:${record.id.slice(0, 8)}] ${record.content}`)),
-      )
-      : null,
-    // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
-    namespace === 'workspace' && (props.cwd === undefined || props.cwd === '')
-      ? createElement('div', { style: ssid.empty }, t('noWorkspace'))
-      : groups.length === 0
-        ? createElement('div', { style: ssid.empty }, t('empty'))
-        : groups.map(group => createElement('div', { key: group.key, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          createElement('div', { style: ssid.title },
-            createElement('span', null, group.label),
-            createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-              group.key === 'pending' && group.items.length > 0
-                ? createElement('button', {
-                  type: 'button',
-                  title: t('confirmAll'),
-                  onClick: () => { void confirmAll() },
-                  style: { ...ssid.btn, padding: '1px 8px', fontSize: 10.5 },
-                }, t('confirmAll'))
-                : null,
-              createElement('span', null, `${group.items.length}`),
-            ),
+    // 内容区独立滚动：预览 + 分组列表。
+    createElement('div', { style: ssid.content },
+      // 注入预览（开发者）：self 自述 + 当前注入的记忆 + 上下文占用统计
+      previewOpen && preview !== null
+        ? createElement('div', { style: { ...ssid.card, display: 'flex', flexDirection: 'column', gap: 6 } },
+          createElement('div', { style: { ...ssid.muted, fontSize: 10.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+            createElement('span', null, t('contextUsage')),
+            createElement('span', null, (() => {
+              const selfChars = preview.self.length
+              const injectedChars = preview.injected.reduce((sum, record) => sum + record.content.length + record.keywords.join('').length, 0)
+              const total = selfChars + injectedChars
+              // 粗估（中英混合，标注 ≈）：中文约 1.5 字符/token，英文约 4 字符/token
+              const tokens = Math.ceil(total / 2)
+              return `${selfChars}+${injectedChars} 字符 ≈ ${tokens} token`
+            })()),
           ),
-          group.items.map(record => createElement('div', { key: record.id, style: ssid.card },
-            createElement('div', { style: ssid.text }, ContentWithRefs({ text: record.content })),
-            // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
-            record.keywords !== undefined && record.keywords.length > 0
-              ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 } },
-                record.keywords.map(keyword => createElement('span', {
-                  key: keyword,
-                  style: {
-                    fontSize: 10, padding: '1px 7px', borderRadius: 8,
-                    background: 'var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))',
-                    color: 'var(--dsw-alias-label-secondary, #67748a)',
-                  },
-                }, keyword)))
-              : null,
-            createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
-              `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}`),
-            createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },
-              createElement('button', {
-                type: 'button',
-                title: record.status === 'approved' ? t('injectSwitch') : t('approveFirst'),
-                disabled: record.status !== 'approved',
-                onClick: () => { void toggleInjected(record) },
-                style: {
-                  ...ssid.btn,
-                  ...(record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {}),
-                  opacity: record.status !== 'approved' ? 0.4 : 1,
-                  cursor: record.status !== 'approved' ? 'not-allowed' : 'pointer',
-                },
-              }, record.injected ? `✓ ${t('injectSwitch')}` : t('injectSwitch')),
-              record.status === 'suggested'
-                ? createElement('button', {
-                  style: ssid.btn,
-                  onClick: () => { void memoryApi.confirm(record.id, props.cwd).then(() => reload()) },
-                }, t('confirm'))
-                : null,
-              createElement('button', {
-                style: ssid.btn,
-                onClick: () => { void memoryApi.forget(record.id, props.cwd).then(() => reload()) },
-              }, t('forget')),
+          createElement('div', { style: { ...ssid.text, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, preview.self),
+          preview.injected.length === 0
+            ? createElement('div', { style: ssid.muted }, t('empty'))
+            : preview.injected.map(record => createElement('div', { key: record.id, style: { ...ssid.muted, fontSize: 11 } },
+              `- [memory:${record.id.slice(0, 8)}] ${record.content}`)),
+        )
+        : null,
+      // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
+      namespace === 'workspace' && (props.cwd === undefined || props.cwd === '')
+        ? createElement('div', { style: ssid.empty }, t('noWorkspace'))
+        : groups.length === 0
+          ? createElement('div', { style: ssid.empty }, t('empty'))
+          : groups.map(group => createElement('div', { key: group.key, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            createElement('div', { style: ssid.title },
+              createElement('span', null, group.label),
+              createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                group.key === 'pending' && group.items.length > 0
+                  ? createElement('button', {
+                    type: 'button',
+                    title: t('confirmAll'),
+                    onClick: () => { void confirmAll() },
+                    style: { ...ssid.btn, padding: '1px 8px', fontSize: 10.5 },
+                  }, t('confirmAll'))
+                  : null,
+                createElement('span', { style: ssid.count }, String(group.items.length)),
+              ),
             ),
+            group.items.map(record => createElement('div', { key: record.id, style: ssid.card },
+              createElement('div', { style: ssid.text }, ContentWithRefs({ text: record.content })),
+              // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
+              record.keywords !== undefined && record.keywords.length > 0
+                ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 } },
+                  record.keywords.map(keyword => createElement('span', {
+                    key: keyword,
+                    style: {
+                      fontSize: 10, padding: '1px 7px', borderRadius: 8,
+                      background: 'var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))',
+                      color: 'var(--dsw-alias-label-secondary, #67748a)',
+                    },
+                  }, keyword)))
+                : null,
+              createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
+                `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}`),
+              createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },
+                createElement('button', {
+                  type: 'button',
+                  title: record.status === 'approved' ? t('injectSwitch') : t('approveFirst'),
+                  disabled: record.status !== 'approved',
+                  onClick: () => { void toggleInjected(record) },
+                  style: {
+                    ...ssid.btn,
+                    ...(record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {}),
+                    opacity: record.status !== 'approved' ? 0.4 : 1,
+                    cursor: record.status !== 'approved' ? 'not-allowed' : 'pointer',
+                  },
+                }, record.injected ? `✓ ${t('injectSwitch')}` : t('injectSwitch')),
+                record.status === 'suggested'
+                  ? createElement('button', {
+                    style: ssid.btn,
+                    onClick: () => { void memoryApi.confirm(record.id, props.cwd).then(() => reload()) },
+                  }, t('confirm'))
+                  : null,
+                createElement('button', {
+                  style: ssid.btn,
+                  onClick: () => { void memoryApi.forget(record.id, props.cwd).then(() => reload()) },
+                }, t('forget')),
+              ),
+            )),
           )),
-        )),
+    ),
   )
 }
 
