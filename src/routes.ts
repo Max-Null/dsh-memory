@@ -10,6 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createRequire } from 'node:module'
 import type { MemoryEngine } from './engine.ts'
 import { SELF_DESCRIPTION } from './self.ts'
+import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, renderInjection } from './injection.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -173,10 +174,18 @@ export function mountMemoryApi(ctx: Context): void {
         ...record.keywords === undefined ? {} : { keywords: record.keywords },
       }, cwdOf(record))
     },
-    'injectionPreview': () => {
+    'injectionPreview': async (payload) => {
       const memory = ctx.get('memory') as MemoryEngine | undefined
       if (memory === undefined) throw new MemoryApiError('service-unavailable', 'memory service unavailable', 503)
-      return { self: SELF_DESCRIPTION, injected: memory.recallRecords() }
+      const record = payload as Record<string, unknown> | null
+      const cwd = cwdOf(record)
+      if (cwd !== undefined) await memory.ensureProjectOpen(cwd)
+      // 0.5.2：预览与真实注入同源（renderInjection）——摘要化 + 预算截断一致
+      const budget = typeof record?.budget === 'number' && record.budget > 0
+        ? record.budget
+        : record?.budget === null ? null : DEFAULT_INJECTION_BUDGET
+      const summaryChars = typeof record?.summaryChars === 'number' && record.summaryChars > 0 ? record.summaryChars : DEFAULT_SUMMARY_CHARS
+      return { self: SELF_DESCRIPTION, ...renderInjection(memory.recallRecords(cwd), budget, summaryChars) }
     },
   }
 

@@ -20,8 +20,8 @@ export const SELF_DESCRIPTION =
   `[记忆系统自述] 当前环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
   + '工作机制：①记忆以明文 JSON 存储（global→$DSH_HOME/storages、工作区→会话工作区 .dsh/storages 随 git 分享）；'
   + '②模型写入即 suggested（待审核），仅人工审核（memory_confirm）后才 approved；'
-  + '③每轮注入 system prompt 的只有「global 的 approved + injected 开关打开」的记忆（常驻注入由用户控制，审核≠注入）；'
-  + '④工作区记忆按会话工作区路由，靠 memory_search 检索（含待审核条目，可先评估再引用）；'
+  + '③每轮注入 system prompt 的 = 「global 的 approved + injected」+「当前会话工作区的 approved + injected」，逐条为单行摘要（内容全文靠 memory_search 检索），并受注入预算限制（超预算按最近更新优先，省略条数在面板「注入预览」可见；常驻注入由用户控制，审核≠注入）；'
+  + '④工作区记忆按会话工作区路由（存储跟随仓库），memory_search 为 BM25 检索（中文 2-gram + 关键词加权，可配置语义融合），可检索任意状态（含待审核条目，可先评估再引用）；'
   + '⑤修正过时内容用 memory_update（改动重置待审核，注入开关保留）。'
   + `可用记忆工具共 6 个：memory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update。`
   + '使用建议：相关历史上下文先 memory_search 检索再引用；新习惯/约定用 memory_save 写入（落在待审核）。'

@@ -13,6 +13,7 @@ import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
 import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
+import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, renderInjection } from './injection.ts'
 
 export { MemoryEngine } from './engine.ts'
 export type {
@@ -26,7 +27,7 @@ export type {
   MemoryWrite,
 } from './engine.ts'
 export { MemoryId } from './engine.ts'
-export { bm25Scores, tokenize } from './bm25.ts'
+export { bm25FieldScores, bm25Scores, cosineSimilarity, rrfFuse, tokenize } from './bm25.ts'
 
 export const name = 'dsh-memory'
 export const inject = ['storage', 'systemPrompt', 'tools', 'webServer', 'webRuntime']
@@ -41,6 +42,7 @@ interface MemoryToolRecord {
   keywords: string[]
   createdAt: number
   updatedAt: number
+  lastUsedAt?: number
 }
 
 interface MemoryToolHit {
@@ -60,6 +62,7 @@ const RECORD_SCHEMA = {
     keywords: { type: 'array', required: true, items: { type: 'string' } },
     createdAt: { type: 'number', required: true },
     updatedAt: { type: 'number', required: true },
+    lastUsedAt: { type: 'number' },
   },
 } as const
 
@@ -82,6 +85,7 @@ function recordValue(record: MemoryRecord): MemoryToolRecord {
     keywords: record.keywords,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    ...record.lastUsedAt === undefined ? {} : { lastUsedAt: record.lastUsedAt },
   }
 }
 
@@ -103,15 +107,30 @@ const GUIDANCE =
   + '(`suggested`) are searchable too. 相关历史上下文可用 memory_search 检索——待审核的记忆也可检索。'
   + 'Every memory is plaintext and inspectable with memory_list; memory_forget removes one. '
   + '所有记忆均为明文，可用 memory_list 查看；memory_forget 删除一条。'
+  + 'Approved + injected memories of the CURRENT session workspace are every-turn injected too. '
+  + '已审核 + 常驻注入开关打开的工作区记忆也会每轮注入（按当前会话工作区路由）。'
 
-// 0.3.4：注入只注入 global 的 approved+injected（systemPrompt context 是
-// 同步回调、无会话 cwd 可及）；工作区（project）记忆按会话 cwd 路由，靠
-// memory_search / 面板访问。
-function recallText(memory: MemoryEngine): string {
-  const auto = memory.recallRecords()
-  if (auto.length === 0) return ''
-  const lines = auto.map(record => `- [memory:${String(record.id)}] ${record.content}`)
-  return `Remembered preferences and conventions — apply these:\n${lines.join('\n')}`
+// 0.5.1：`memory:recall` provider 可经 AssembleContext.agent 拿到当前会话
+// 的 header.cwd——注入 = global + 当前会话工作区的 approved+injected
+// （0.3.4 起工作区记忆就按会话 cwd 路由；provider 是同步回调，只读已
+// 打开/缓存的表，未打开时本轮工作区部分为空，由 ensureProjectOpen 预热）。
+// 0.5.2：注入经摘要化 + 预算截断（renderInjection，纯函数）防上下文膨胀。
+function recallText(memory: MemoryEngine, projectCwd: string | undefined, budget: number | null, summaryChars: number): string {
+  const rendered = renderInjection(memory.recallRecords(projectCwd), budget, summaryChars)
+  if (rendered.lines.length === 0) return ''
+  return `Remembered preferences and conventions — apply these:\n${rendered.lines.join('\n')}`
+}
+
+/** 从组装上下文取当前 agent 会话的工作区 cwd（AssembleContext.agent 由 dsh-agent 声明合并提供）。 */
+function assemblyProjectCwd(assembly: unknown): string | undefined {
+  return (assembly as { agent?: { session?: { header?: { cwd?: string } } } } | undefined)
+    ?.agent?.session?.header?.cwd
+}
+
+/** 会话 header 的 cwd（session/created 事件载荷），预热 work 区表用。 */
+function sessionProjectCwd(session: unknown): string | undefined {
+  const cwd = (session as { meta?: { cwd?: unknown } } | undefined)?.meta?.cwd
+  return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
 }
 
 /** 从工具执行上下文取调用会话的工作区 cwd（0.3.4 工作区路由）。 */
@@ -153,7 +172,23 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   ctx.systemPrompt.context({
     name: 'memory:recall',
     order: 50,
-    text: () => recallText(memory),
+    text: (assembly) => {
+      const cwd = assemblyProjectCwd(assembly)
+      if (cwd !== undefined) void memory.ensureProjectOpen(cwd).catch(() => { /* 预热失败无碍：本轮工作区部分为空，下一轮重试 */ })
+      const budget = config?.injectionBudget ?? DEFAULT_INJECTION_BUDGET
+      const summaryChars = config?.summaryChars ?? DEFAULT_SUMMARY_CHARS
+      return recallText(memory, cwd, budget, summaryChars)
+    },
+  })
+
+  // 会话创建即预热对应工作区的 project 表（0.5.1）：让首轮模型请求就
+  // 能注入工作区常驻记忆（provider 同步只读已打开的表）。
+  // session/created 事件由 dsh-session 提供（可选依赖：无 session 服务
+  // 的环境不派发事件，预热由 provider 路径兜底）。
+  const emitter = ctx as unknown as { on?: (event: string, handler: (session: unknown) => void) => void }
+  emitter.on?.('session/created', (session) => {
+    const cwd = sessionProjectCwd(session)
+    if (cwd !== undefined) void memory.ensureProjectOpen(cwd).catch(() => { /* 预热失败无碍 */ })
   })
 
   ctx.tools.register(defineTool({
@@ -202,7 +237,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_search',
-    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. 按关键词检索记忆（含待审核条目）。',
+    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. 按关键词检索记忆（中文 2-gram + 关键词加权；配置嵌入时含语义融合；含待审核条目）。',
     parameters: {
       query: { type: 'string', required: true, description: 'Keyword query. 关键词查询.' },
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },

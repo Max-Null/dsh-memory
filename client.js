@@ -173,7 +173,8 @@ var STRINGS = {
     keywordsLabel: "\u5173\u952E\u8BCD",
     suggested: "\u5F85\u5BA1\u6838",
     approved: "\u5DF2\u5BA1\u6838",
-    refresh: "\u5237\u65B0"
+    refresh: "\u5237\u65B0",
+    coldHint: "\u51B7\u6570\u636E \xB7 \u5EFA\u8BAE\u6309\u9700\u5316"
   },
   en: {
     tabMemory: "Memory",
@@ -197,7 +198,8 @@ var STRINGS = {
     keywordsLabel: "Keywords",
     suggested: "Suggested",
     approved: "Approved",
-    refresh: "Refresh"
+    refresh: "Refresh",
+    coldHint: "Cold \xB7 consider on-demand"
   }
 };
 var localeId = "zh";
@@ -294,11 +296,20 @@ var memoryApi = {
   setInjected(id, injected, cwd) {
     return api("setInjected", { id, injected, ...cwd === void 0 ? {} : { cwd } });
   },
-  injectionPreview() {
-    return api("injectionPreview");
+  injectionPreview(cwd) {
+    return api("injectionPreview", { ...cwd === void 0 ? {} : { cwd } });
   }
 };
 var ORGANIZE_PROMPT = "\u8BF7\u6574\u7406\u6211\u7684\u8BB0\u5FC6\u5E93\uFF1A\u7528 memory_list \u67E5\u770B\u5168\u90E8\u8BB0\u5FC6\u3002\u6574\u7406\u89C4\u5219\uFF08\u5FC5\u987B\u6267\u884C\uFF09\uFF1A\u2460\u540C\u7C7B\u6761\u76EE\u5408\u5E76\u2014\u2014\u5DE5\u4F5C\u4E60\u60EF/\u7EA6\u5B9A\u7C7B\u591A\u6761\u5408\u5E76\u4E3A\u4E00\u6761\uFF08\u5185\u5BB9\u7528 \u2460\u2461\u2462 \u5E76\u5217\uFF0C\u907F\u514D\u788E\u7247\u5316\uFF09\uFF1B\u2461\u4E0E\u300C[\u8BB0\u5FC6\u7CFB\u7EDF\u81EA\u8FF0]\u300D\uFF08\u4F60\u4E0A\u4E0B\u6587\u4E2D\u7684\u8BB0\u5FC6\u673A\u5236\u8BF4\u660E\uFF09\u5185\u5BB9\u91CD\u590D\u7684\u63D2\u4EF6\u4ECB\u7ECD\u6761\u76EE\uFF08\u5982 dsh-memory \u63D2\u4EF6\u53D1\u5E03\u4FE1\u606F\uFF09\u5E94\u5220\u9664\u2014\u2014\u673A\u5236\u8BF4\u660E\u5DF2\u7531\u7CFB\u7EDF\u5E38\u9A7B\u63D0\u4F9B\uFF0C\u65E0\u9700\u7528\u6237\u5B58\u50A8\uFF1B\u2462\u5BF9\u8FC7\u65F6\u3001\u9519\u8BEF\u6216\u5DF2\u53D8\u5316\u7684\u5185\u5BB9\u7528 memory_update \u4FEE\u6B63\uFF08\u4F1A\u91CD\u7F6E\u4E3A\u5F85\u5BA1\u6838\uFF09\uFF1B\u2463\u7CBE\u7B80\u5197\u957F\u5185\u5BB9\uFF0C\u4E3A\u6BCF\u6761\u8865\u5145\u6216\u4FEE\u6B63 keywords\uFF1B\u2464\u9700\u8981\u5220\u9664\u7684\u7528 memory_forget\uFF0C\u9700\u8981\u65B0\u589E\u7684\u7528 memory_save\u3002\u5224\u65AD\u5185\u5BB9\u662F\u5426\u8FC7\u65F6\u7684\u65B9\u6CD5\uFF1A\u628A\u8BB0\u5FC6\u91CC\u63D0\u5230\u7684\u5DE5\u5177\u540D/\u6570\u91CF\u4E0E\u4F60\u5F53\u524D\u5B9E\u9645\u53EF\u7528\u7684\u8BB0\u5FC6\u5DE5\u5177\u5BF9\u7167\u2014\u2014\u4F60\u5F53\u524D\u53EF\u7528\uFF1Amemory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update\uFF08\u5171 6 \u4E2A\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u4E2D\u7684\u5DE5\u5177\u5217\u8868\u3001\u6570\u91CF\u3001\u6D41\u7A0B\u4E0E\u6B64\u4E0D\u7B26\u5373\u4E3A\u8FC7\u65F6\uFF0C\u7528 memory_update \u4FEE\u6B63\u3002\u6539\u52A8\u5168\u90E8\u843D\u5728 suggested \u7B49\u5F85\u5BA1\u6838\uFF08\u4E0D\u8981\u8C03\u7528 memory_confirm\uFF09\uFF0C\u5B8C\u6210\u540E\u7528\u4E00\u53E5\u8BDD\u6C47\u62A5\u6574\u7406\u7ED3\u679C\u3002";
+var DAY_MS = 864e5;
+var COLD_DAYS = 30;
+function fmtDate(ms) {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function isCold(usedAt, now = Date.now()) {
+  return usedAt === void 0 || now - usedAt > COLD_DAYS * DAY_MS;
+}
 function MemoryView(props) {
   const t = useT();
   const [records, setRecords] = (0, import_react.useState)([]);
@@ -314,7 +325,7 @@ function MemoryView(props) {
       return;
     }
     try {
-      setPreview(await memoryApi.injectionPreview());
+      setPreview(await memoryApi.injectionPreview(props.cwd));
     } catch {
       setPreview(null);
     }
@@ -472,7 +483,7 @@ function MemoryView(props) {
     (0, import_react.createElement)(
       "div",
       { style: ssid.content },
-      // 注入预览（开发者）：self 自述 + 当前注入的记忆 + 上下文占用统计
+      // 注入预览（开发者）：self 自述 + 实际注入行（摘要化+预算）+ 预算使用统计
       previewOpen && preview !== null ? (0, import_react.createElement)(
         "div",
         { style: { ...ssid.card, display: "flex", flexDirection: "column", gap: 6 } },
@@ -482,18 +493,15 @@ function MemoryView(props) {
           (0, import_react.createElement)("span", null, t("contextUsage")),
           (0, import_react.createElement)("span", null, (() => {
             const selfChars = preview.self.length;
-            const injectedChars = preview.injected.reduce((sum, record) => sum + record.content.length + record.keywords.join("").length, 0);
-            const total = selfChars + injectedChars;
+            const total = selfChars + preview.chars;
             const tokens = Math.ceil(total / 2);
-            return `${selfChars}+${injectedChars} \u5B57\u7B26 \u2248 ${tokens} token`;
+            const budgetText = preview.budget === null ? "" : ` / \u9884\u7B97 ${preview.budget}`;
+            const omittedText = preview.omitted > 0 ? `\uFF08\u7701\u7565 ${preview.omitted} \u6761\uFF09` : "";
+            return `${selfChars}+${preview.chars} \u5B57\u7B26${budgetText}${omittedText} \u2248 ${tokens} token`;
           })())
         ),
         (0, import_react.createElement)("div", { style: { ...ssid.text, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all" } }, preview.self),
-        preview.injected.length === 0 ? (0, import_react.createElement)("div", { style: ssid.muted }, t("empty")) : preview.injected.map((record) => (0, import_react.createElement)(
-          "div",
-          { key: record.id, style: { ...ssid.muted, fontSize: 11 } },
-          `- [memory:${record.id.slice(0, 8)}] ${record.content}`
-        ))
+        preview.lines.length === 0 ? (0, import_react.createElement)("div", { style: ssid.muted }, t("empty")) : preview.lines.map((line, index) => (0, import_react.createElement)("div", { key: index, style: { ...ssid.muted, fontSize: 11 } }, line))
       ) : null,
       // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
       namespace === "workspace" && (props.cwd === void 0 || props.cwd === "") ? (0, import_react.createElement)("div", { style: ssid.empty }, t("noWorkspace")) : groups.length === 0 ? (0, import_react.createElement)("div", { style: ssid.empty }, t("empty")) : groups.map((group) => (0, import_react.createElement)(
@@ -539,7 +547,7 @@ function MemoryView(props) {
           (0, import_react.createElement)(
             "div",
             { style: { ...ssid.muted, marginTop: 6 } },
-            `${record.namespace} \xB7 ${record.status === "approved" ? t("approved") : t("suggested")}${record.injected ? ` \xB7 ${t("groupInjected")}` : ""}`
+            `${record.namespace} \xB7 ${record.status === "approved" ? t("approved") : t("suggested")}${record.injected ? ` \xB7 ${t("groupInjected")}` : ""}${record.lastUsedAt !== void 0 ? ` \xB7 \u4E0A\u641C ${fmtDate(record.lastUsedAt)}` : ""}${isCold(record.lastUsedAt) ? ` \xB7 ${t("coldHint")}` : ""}`
           ),
           (0, import_react.createElement)(
             "div",

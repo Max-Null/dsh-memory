@@ -11,7 +11,7 @@ This plugin belongs to the **`@max-null/*` family** — a set of plugins that to
 1. **人是所有者**：模型只能写入 `suggested` 状态的记忆，绝不自我提升；只有人工确认（`setStatus`）才能让记忆生效。
 2. **可观测先于精准**：每条记忆是明文，`memory_list` 随时可见、`memory_forget` 随时删除——不存在"静默暗礁"。
 3. **明文是人机共享的审计窗口**：记忆是可读文本，模型可自检其是否过期或出错（规划中的 v2）。
-4. **确定性且缓存安全**：BM25 关键词检索是存储的纯函数、无 LLM 调用；固定指引进 system-prompt section，`auto` 记忆进 context。
+4. **确定性且缓存安全**：BM25 关键词检索是存储的纯函数、无 LLM 调用；固定指引进 system-prompt section，`approved + injected` 记忆进 recall context（global 全量 + 当前会话工作区），逐条为单行摘要并按注入预算截断（超预算按最近使用优先，省略数在面板可见）。
 
 ## 用法
 
@@ -29,8 +29,9 @@ npm install @max-null/dsh-memory
 ## 提供的服务与工具
 
 - **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `setStatus`
-- **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_confirm`、`memory_forget`
-- **注入**：`tool:memory` 指引 section + `memory:recall` 召回 context（`auto` 记忆，带 `[memory:<id>]` 来源标记）
+- **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_confirm`、`memory_forget`、`memory_update`
+- **注入**：`tool:memory` 指引 section + `memory:recall` 召回 context（global 的 `approved + injected` + 当前会话工作区的 `approved + injected`，带 `[memory:<id>:<namespace>]` 来源标记；摘要化 + 预算截断）
+- **检索**：BM25（CJK 单字 + 2-gram，content 与 keywords 字段分离加权；中文多字查询精度显著优于单字切分）；可选语义融合（见「可选配置」）
 
 ## 两层存储（global / project）
 
@@ -39,16 +40,17 @@ npm install @max-null/dsh-memory
 | namespace | 默认位置 | 用途 |
 |---|---|---|
 | `global` | `$DSH_HOME/storages/memory.json` | 跨项目的个人偏好 |
-| `project` | `<cwd>/.dsh/storages/memory_project.json` | 跟随仓库的项目共识，可 git 分享 |
+| `project` | `<cwd>/.dsh/storages/memory_project_<hash>.json` | 跟随仓库的项目共识，可 git 分享 |
 
-两个根都可用 config 覆盖（`globalRoot` / `projectRoot`）。`memory_list` / `memory_search` 不带 `namespace` 过滤时会同时查两层。
+两个根都可用 config 覆盖（`globalRoot` / `projectRoot`）。`memory_list` / `memory_search` 不带 `namespace` 过滤时会同时查两层。旧版双重前缀文件名（`memory_project_memory_project_<hash>.json`）在打开时自动迁移为规范名。
 
 ## 使用流程（人工确认闸门）
 
 ```
 模型 memory_save     →  status: suggested（只是建议，未生效）
-人 memory_confirm    →  status: auto（生效，自动进入每轮的 recall context）
-memory_search        →  随时按关键词召回任意状态的记忆
+人 memory_confirm    →  status: approved（已审核；是否常驻注入由独立开关 injected 决定）
+人（面板/开关）       →  injected: true（每轮注入：global + 当前会话工作区，摘要化 + 预算截断）
+memory_search        →  关键词/语义召回任意状态的记忆（命中标记 lastUsedAt 冷热追踪）
 memory_forget        →  随时删除
 ```
 
@@ -56,9 +58,26 @@ memory_forget        →  随时删除
 
 ## 为什么明文 + BM25，而不是向量检索
 
-向量检索的记忆本体是一串不可读的数字，过期信息会成为**无法观测、无法修复的静默暗礁**；BM25 + 明文让每一次召回都可解释、每一条记忆都可见可删。语义（向量）检索留作 v2 的可选项，且以"可观测 + 可修复"为门槛，而非时间表。
+向量检索的记忆本体是一串不可读的数字，过期信息会成为**无法观测、无法修复的静默暗礁**；BM25 + 明文让每一次召回都可解释、每一条记忆都可见可删。语义（向量）检索作为**可插拔的可选项**（0.5.2，见「可选配置」）——记忆本体仍是明文，向量仅作为检索辅助字段（`vector`，明文可读），且以"可观测 + 可修复"为门槛。
 
-明文还有一层**跟随仓库分享**的好处：`project` 命名空间的记忆落在项目文件夹内（`<cwd>/.dsh/storages/memory_project.json`），随 `git` 提交、分享给所有协作者；`global` 命名空间的记忆留在本地 `$DSH_HOME`。团队的共识（"本项目统一用 Vue3 `<script setup>`"）能沉淀进仓库，而不是散落在每个人的本地。FTS5 的 SQLite 二进制、向量的数字串，都无法这样"跟着仓库走"。
+明文还有一层**跟随仓库分享**的好处：`project` 命名空间的记忆落在项目文件夹内（`<cwd>/.dsh/storages/memory_project_<hash>.json`），随 `git` 提交、分享给所有协作者；`global` 命名空间的记忆留在本地 `$DSH_HOME`。团队的共识（"本项目统一用 Vue3 `<script setup>`"）能沉淀进仓库，而不是散落在每个人的本地。FTS5 的 SQLite 二进制无法这样"跟着仓库走"。
+
+## 可选配置
+
+在 `cordis.yml` 的 `config` 里传给插件（均可省略）：
+
+```yaml
+- id: memory
+  name: '@max-null/dsh-memory'
+  config:
+    injectionBudget: 1500        # 常驻注入预算（字符；null = 不限制）
+    summaryChars: 80             # 单条注入摘要截断上限（字符）
+    semanticTopK: 5              # 语义侧参与融合的 topK（仅配置 embeddings 时生效）
+    # 混合语义检索（可插拔；缺省 = 纯 BM25）
+    # embeddings: { embed: '...' 提供 embed(texts) 的宿主函数 或 插件名 ... }
+```
+
+`embeddings` 接受 `{ embed(texts): Promise<number[][]>, similarity? }` 对象——由宿主装配层提供嵌入实现（如 DeepSeek 嵌入端点）；配置后 `memory_search` 以 BM25 + 语义 RRF 融合，向量增量生成并持久化，嵌入调用失败自动降级为纯 BM25。
 
 ## SSID 系列
 

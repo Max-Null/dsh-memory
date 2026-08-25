@@ -12,6 +12,7 @@ import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol'
 import type { MemoryFilter, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryId } from './engine.ts'
 import { SELF_DESCRIPTION } from './self.ts'
+import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, renderInjection } from './injection.ts'
 
 /** Client-callable memory surface; registered as the `memory` Typert namespace. */
 export class MemoryGateway extends TypertRemoteService {
@@ -64,12 +65,23 @@ export class MemoryGateway extends TypertRemoteService {
   }
 
   /**
-   * 注入预览（0.3.5）：开发者查看当前注入到 system prompt 的记忆内容
-   * ——self 自述 + 实际注入的 global approved+injected 记忆。
+   * 注入预览（0.3.5 + 0.5.2）：开发者查看当前注入到 system prompt 的记忆
+   * 内容——self 自述 + 当前会话工作区（cwd）的 approved+injected 记忆，
+   * 经摘要化 + 预算截断（与 memory:recall 同源渲染）。
    */
   @Remote('injectionPreview')
-  injectionPreview(): { self: string, injected: MemoryRecord[] } {
-    return { self: SELF_DESCRIPTION, injected: this.ctx.memory.recallRecords() }
+  async injectionPreview(cwd?: string, budget?: number | null, summaryChars?: number): Promise<{
+    self: string, lines: string[], budget: number | null, omitted: number, chars: number,
+  }> {
+    if (cwd !== undefined) await this.ctx.memory.ensureProjectOpen(cwd)
+    return {
+      self: SELF_DESCRIPTION,
+      ...renderInjection(
+        this.ctx.memory.recallRecords(cwd),
+        budget ?? DEFAULT_INJECTION_BUDGET,
+        summaryChars ?? DEFAULT_SUMMARY_CHARS,
+      ),
+    }
   }
 }
 

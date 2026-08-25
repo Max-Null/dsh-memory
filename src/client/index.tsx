@@ -172,6 +172,7 @@ const STRINGS = {
     suggested: '待审核',
     approved: '已审核',
     refresh: '刷新',
+    coldHint: '冷数据 · 建议按需化',
   },
   en: {
     tabMemory: 'Memory',
@@ -196,6 +197,7 @@ const STRINGS = {
     suggested: 'Suggested',
     approved: 'Approved',
     refresh: 'Refresh',
+    coldHint: 'Cold · consider on-demand',
   },
 } as const
 type StringKey = keyof typeof STRINGS.zh
@@ -254,7 +256,11 @@ const ssid = {
 
 // ---- /memory/api 数据通道（0.3.6，host 自建端点，panels 模式） ----
 interface MemoryApiRecord {
-  id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[]
+  id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[], lastUsedAt?: number
+}
+/** 注入预览（0.5.2）：与 memory:recall 同源渲染——真实注入行 + 预算统计。 */
+interface InjectionPreview {
+  self: string, lines: string[], budget: number | null, omitted: number, chars: number
 }
 
 async function api(method: string, payload?: Record<string, unknown>): Promise<unknown> {
@@ -286,8 +292,8 @@ const memoryApi = {
   setInjected(id: string, injected: boolean, cwd?: string): Promise<MemoryApiRecord> {
     return api('setInjected', { id, injected, ...cwd === undefined ? {} : { cwd } }) as Promise<MemoryApiRecord>
   },
-  injectionPreview(): Promise<{ self: string, injected: MemoryApiRecord[] }> {
-    return api('injectionPreview') as Promise<{ self: string, injected: MemoryApiRecord[] }>
+  injectionPreview(cwd?: string): Promise<InjectionPreview> {
+    return api('injectionPreview', { ...cwd === undefined ? {} : { cwd } }) as Promise<InjectionPreview>
   },
 }
 
@@ -306,6 +312,17 @@ interface MemoryViewProps {
   }
 }
 
+// ---- 冷热显示（0.5.3：lastUsedAt 追踪；30 天未检索视为冷数据） ----
+const DAY_MS = 86_400_000
+const COLD_DAYS = 30
+function fmtDate(ms: number): string {
+  const date = new Date(ms)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+function isCold(usedAt: number | undefined, now: number = Date.now()): boolean {
+  return usedAt === undefined || now - usedAt > COLD_DAYS * DAY_MS
+}
+
 function MemoryView(props: MemoryViewProps): ReactNode {
   const t = useT()
   const [records, setRecords] = useState<MemoryApiRecord[]>([])
@@ -314,12 +331,13 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const [refreshing, setRefreshing] = useState(false)
   const [organizing, setOrganizing] = useState(false)
   // 注入预览（0.3.5）：开发者查看注入到 system prompt 的内容
-  const [preview, setPreview] = useState<{ self: string, injected: MemoryApiRecord[] } | null>(null)
+  const [preview, setPreview] = useState<InjectionPreview | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const togglePreview = async (): Promise<void> => {
     if (previewOpen) { setPreviewOpen(false); return }
     try {
-      setPreview(await memoryApi.injectionPreview())
+      // 0.5.1：预览按当前会话工作区路由——与真实注入一致（global + 当前工作区）
+      setPreview(await memoryApi.injectionPreview(props.cwd))
     } catch {
       setPreview(null)
     }
@@ -469,25 +487,25 @@ function MemoryView(props: MemoryViewProps): ReactNode {
     ),
     // 内容区独立滚动：预览 + 分组列表。
     createElement('div', { style: ssid.content },
-      // 注入预览（开发者）：self 自述 + 当前注入的记忆 + 上下文占用统计
+      // 注入预览（开发者）：self 自述 + 实际注入行（摘要化+预算）+ 预算使用统计
       previewOpen && preview !== null
         ? createElement('div', { style: { ...ssid.card, display: 'flex', flexDirection: 'column', gap: 6 } },
           createElement('div', { style: { ...ssid.muted, fontSize: 10.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
             createElement('span', null, t('contextUsage')),
             createElement('span', null, (() => {
               const selfChars = preview.self.length
-              const injectedChars = preview.injected.reduce((sum, record) => sum + record.content.length + record.keywords.join('').length, 0)
-              const total = selfChars + injectedChars
+              const total = selfChars + preview.chars
               // 粗估（中英混合，标注 ≈）：中文约 1.5 字符/token，英文约 4 字符/token
               const tokens = Math.ceil(total / 2)
-              return `${selfChars}+${injectedChars} 字符 ≈ ${tokens} token`
+              const budgetText = preview.budget === null ? '' : ` / 预算 ${preview.budget}`
+              const omittedText = preview.omitted > 0 ? `（省略 ${preview.omitted} 条）` : ''
+              return `${selfChars}+${preview.chars} 字符${budgetText}${omittedText} ≈ ${tokens} token`
             })()),
           ),
           createElement('div', { style: { ...ssid.text, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, preview.self),
-          preview.injected.length === 0
+          preview.lines.length === 0
             ? createElement('div', { style: ssid.muted }, t('empty'))
-            : preview.injected.map(record => createElement('div', { key: record.id, style: { ...ssid.muted, fontSize: 11 } },
-              `- [memory:${record.id.slice(0, 8)}] ${record.content}`)),
+            : preview.lines.map((line, index) => createElement('div', { key: index, style: { ...ssid.muted, fontSize: 11 } }, line)),
         )
         : null,
       // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
@@ -525,7 +543,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
                   }, keyword)))
                 : null,
               createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
-                `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}`),
+                `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}${record.lastUsedAt !== undefined ? ` · 上搜 ${fmtDate(record.lastUsedAt)}` : ''}${isCold(record.lastUsedAt) ? ` · ${t('coldHint')}` : ''}`),
               createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },
                 createElement('button', {
                   type: 'button',
