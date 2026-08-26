@@ -15,6 +15,7 @@ import { defineDomain, domainTable, DomainFacility } from '@deepseek-ai/dsh-stor
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import { bm25FieldScores, cosineSimilarity, rrfFuse } from './bm25.ts'
+import { parsePromptFile, scanPromptDir, writePromptFile, type PromptFile } from './prompt-files.ts'
 
 declare const memoryIdBrand: unique symbol
 /** Opaque identity of one stored memory record. */
@@ -31,6 +32,23 @@ export type MemoryNamespace = 'global' | 'project'
  */
 export type MemoryStatus = 'suggested' | 'approved'
 
+/**
+ * 记录类别（0.6.0 模板库）：'fact' = 常规记忆（缺省，旧数据即此）；
+ * 'prompt' = 提示词模板索引记录（文件是事实源，见 prompt-files.ts）。
+ */
+export type MemoryKind = 'fact' | 'prompt'
+
+/** prompt 索引记录的附加元数据（与 md 文件 frontmatter 对齐）。 */
+export interface PromptMetaIndex {
+  seq?: number
+  /** md 文件绝对路径。 */
+  path: string
+  /** 索引时的文件 mtime（惰性刷新比对）。 */
+  mtime: number
+  /** user=用户创建；agent=模型新增（UI 角标）。 */
+  source: 'user' | 'agent'
+}
+
 export interface MemoryRecord {
   id: MemoryId
   namespace: MemoryNamespace
@@ -43,6 +61,10 @@ export interface MemoryRecord {
   updatedAt: number
   /** 最近一次被 memory_search 命中的时间（0.5.3 冷热追踪）；无则未命中过。 */
   lastUsedAt?: number
+  /** 记录类别（缺省 'fact'）。 */
+  kind?: MemoryKind
+  /** prompt 记录元数据（仅 kind==='prompt'）。 */
+  meta?: PromptMetaIndex
 }
 
 export interface MemoryWrite {
@@ -55,6 +77,8 @@ export interface MemoryFilter {
   namespace?: MemoryNamespace
   status?: MemoryStatus
   injected?: boolean
+  /** 记录类别过滤（0.6.0）；缺省不过滤（工具层显式传 kind='fact' 保持旧行为）。 */
+  kind?: MemoryKind
 }
 
 export interface MemoryHit {
@@ -96,6 +120,10 @@ interface StoredBlock {
   lastUsedAt?: number
   /** 混合检索向量（0.5.2，仅有 embeddings 配置时生成；明文可读）。 */
   vector?: number[]
+  /** 记录类别（0.6.0 模板库；缺省 fact）。 */
+  kind?: MemoryKind
+  /** prompt 索引元数据（仅 kind==='prompt'）。 */
+  meta?: PromptMetaIndex
 }
 
 const blockSchema = z.object({
@@ -108,6 +136,13 @@ const blockSchema = z.object({
   updatedAt: z.number(),
   lastUsedAt: z.number().optional(),
   vector: z.array(z.number()).optional(),
+  kind: z.enum(['fact', 'prompt']).optional(),
+  meta: z.object({
+    seq: z.number().optional(),
+    path: z.string(),
+    mtime: z.number(),
+    source: z.enum(['user', 'agent']),
+  }).optional(),
 })
 
 /** Shared table shape; the two domains differ only by name and backend route. */
@@ -157,7 +192,7 @@ function normalizeBlock(block: StoredBlock): { status: MemoryStatus; injected: b
 }
 
 function toRecord(id: string, block: StoredBlock): MemoryRecord {
-  return {
+  const base: MemoryRecord = {
     id: MemoryId(id),
     namespace: block.namespace,
     ...normalizeBlock(block),
@@ -166,6 +201,12 @@ function toRecord(id: string, block: StoredBlock): MemoryRecord {
     createdAt: block.createdAt,
     updatedAt: block.updatedAt,
     ...block.lastUsedAt === undefined ? {} : { lastUsedAt: block.lastUsedAt },
+  }
+  // 0.6.0 模板库字段（缺省 fact；prompt 元数据透传）
+  return {
+    ...base,
+    ...block.kind === undefined ? {} : { kind: block.kind },
+    ...block.meta === undefined ? {} : { meta: block.meta },
   }
 }
 
@@ -209,6 +250,9 @@ export interface MemoryConfig {
   embeddings?: MemoryEmbeddings
   /** 语义侧参与融合的 topK（0.5.2）；默认 5。 */
   semanticTopK?: number
+  /** 全局提示词模板根目录（0.6.0）；默认 `$DSH_HOME/prompt-library`。
+   *  project 模板随工作区（`<workspace>/.dsh/prompt-library`，与记忆同构）。 */
+  promptGlobalRoot?: string
 }
 
 /**
@@ -351,7 +395,8 @@ export class MemoryEngine extends Service {
     const records = await this.allRecords(filter?.namespace, projectCwd)
     return records.filter(record =>
       (filter?.status === undefined || record.status === filter.status)
-      && (filter?.injected === undefined || record.injected === filter.injected))
+      && (filter?.injected === undefined || record.injected === filter.injected)
+      && (filter?.kind === undefined || (record.kind ?? 'fact') === filter.kind))
   }
 
   async search(query: string, filter?: MemoryFilter, projectCwd?: string): Promise<MemoryHit[]> {
@@ -517,36 +562,32 @@ export class MemoryEngine extends Service {
    * 「常驻注入」开关调用（remote.setInjected）。
    */
   async setInjected(id: MemoryId, injected: boolean, projectCwd?: string): Promise<MemoryRecord> {
-    const global = this.requireTable('global').get(id)
-    if (global !== undefined) {
-      const updated: StoredBlock = {
-        ...global,
-        status: normalizeBlock(global).status,
-        injected,
-        updatedAt: Date.now(),
+    const locate = async (): Promise<{ table: KvTable<string, StoredBlock>, block: StoredBlock } | undefined> => {
+      const global = this.requireTable('global').get(id)
+      if (global !== undefined) return { table: this.requireTable('global'), block: global }
+      const project = await this.projectTableFor(projectCwd)
+      if (project !== undefined) {
+        const block = project.get(id)
+        if (block !== undefined) return { table: project, block }
       }
-      await this.requireTable('global').put(id, updated)
-      const record = toRecord(id, updated)
-      this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
-      return record
+      return undefined
     }
-    const project = await this.projectTableFor(projectCwd)
-    if (project !== undefined) {
-      const block = project.get(id)
-      if (block !== undefined) {
-        const updated: StoredBlock = {
-          ...block,
-          status: normalizeBlock(block).status,
-          injected,
-          updatedAt: Date.now(),
-        }
-        await project.put(id, updated)
-        const record = toRecord(id, updated)
-        this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
-        return record
-      }
+    const found = await locate()
+    if (found === undefined) throw new Error(`cannot set injected of unknown memory '${id}'`)
+    // 模板永不注入（0.6.0）：prompt 记录拒绝开关（UI 对该类不展示开关，此处兜底）
+    if ((found.block.kind ?? 'fact') === 'prompt') {
+      throw new Error(`cannot set injected of prompt record '${id}': prompt templates are never injected`)
     }
-    throw new Error(`cannot set injected of unknown memory '${id}'`)
+    const updated: StoredBlock = {
+      ...found.block,
+      status: normalizeBlock(found.block).status,
+      injected,
+      updatedAt: Date.now(),
+    }
+    await found.table.put(id, updated)
+    const record = toRecord(id, updated)
+    this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
+    return record
   }
 
   /**
@@ -642,5 +683,141 @@ export class MemoryEngine extends Service {
     const table = namespace === 'global' ? this.globalTable : undefined
     if (table === undefined) throw new Error('memory engine is not started yet')
     return table
+  }
+
+  // ── 提示词模板库（0.6.0）：md 文件是事实源，索引记录 kind='prompt' ──────
+  /** 全局模板根（默认 `$DSH_HOME/prompt-library`，可配置覆盖）。 */
+  private promptGlobalDir(): string {
+    return this.config.promptGlobalRoot ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'prompt-library')
+  }
+
+  /** project 模板根（随工作区 `<workspace>/.dsh/prompt-library`，与记忆同构）。 */
+  private promptProjectDir(projectCwd?: string): string {
+    if (projectCwd === undefined || projectCwd === '') return ''
+    return join(projectCwd, '.dsh', 'prompt-library')
+  }
+
+  /** 稳定索引 id（按路径 hash；文件删除后随刷新清理）。 */
+  private promptIdOf(path: string): MemoryId {
+    let h = 5381
+    const text = path.toLowerCase()
+    for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0
+    return MemoryId(`prompt-${Math.abs(h).toString(36)}`)
+  }
+
+  /**
+   * 扫描模板目录并同步索引（mtime 惰性：未变条目零写；目录缺失 = 空库）。
+   * @returns 统计（扫描数/变更数/清理数 + 坏文件警告）。
+   */
+  async refreshPromptIndex(projectCwd?: string): Promise<{ scan: number, changed: number, removed: number, warnings: string[] }> {
+    const globalDir = this.promptGlobalDir()
+    const projectDir = this.promptProjectDir(projectCwd)
+    const globalScan = scanPromptDir(globalDir)
+    const projectScan = scanPromptDir(projectDir)
+    const scanned = [...globalScan.files, ...projectScan.files]
+    const warnings = [...globalScan.warnings, ...projectScan.warnings]
+    const globalTable = this.requireTable('global')
+    const projectTable = projectCwd !== undefined && projectCwd !== ''
+      ? await this.projectTableFor(projectCwd)
+      : undefined
+    const existing = await this.list({ kind: 'prompt' }, projectCwd)
+    const existingById = new Map(existing.map(record => [String(record.id), record]))
+    const seen = new Set<string>()
+    let changed = 0
+    let removed = 0
+    const now = Date.now()
+    for (const file of scanned) {
+      const id = this.promptIdOf(file.path)
+      seen.add(String(id))
+      const isGlobal = file.path.startsWith(globalDir)
+      const table = isGlobal ? globalTable : projectTable
+      if (table === undefined) continue
+      const prev = existingById.get(String(id))
+      if (prev?.meta !== undefined && prev.meta.mtime === file.mtime) continue // mtime 未变：零写
+      const keywords = [
+        file.meta.name,
+        ...(file.meta.dimension !== undefined ? [file.meta.dimension] : []),
+        ...(file.meta.difficulty !== undefined ? [file.meta.difficulty] : []),
+        ...file.meta.tags,
+      ].filter(keyword => keyword !== '').map(keyword => keyword.toLowerCase())
+      const block: StoredBlock = {
+        namespace: isGlobal ? 'global' : 'project',
+        status: 'approved',   // 文件存在即生效（设计文档 §三：模板不做审核流）
+        injected: false,      // 模板永不注入
+        content: [file.meta.name, file.meta.dimension ?? '', file.meta.difficulty ?? '', file.meta.tags.join(' '), file.summary]
+          .filter(part => part !== '').join(' '),
+        keywords,
+        createdAt: prev?.createdAt ?? now,
+        updatedAt: now,
+        kind: 'prompt',
+        meta: { seq: file.meta.seq, path: file.path, mtime: file.mtime, source: file.meta.source },
+      }
+      await table.put(id, block)
+      changed++
+    }
+    for (const record of existing) {
+      if (seen.has(String(record.id))) continue
+      if (record.meta === undefined) continue
+      const isGlobal = record.meta.path.startsWith(globalDir)
+      const table = isGlobal ? globalTable : projectTable
+      if (table !== undefined) {
+        await table.delete(record.id)
+        removed++
+      }
+    }
+    return { scan: scanned.length, changed, removed, warnings }
+  }
+
+  /**
+   * 取模板（id 或名称/路径片段定位），返回 md 全文（直读文件，忽略索引缓存）。
+   * @throws 未命中或文件解析失败（错误信息可读）。
+   */
+  async promptGet(nameOrId: string, projectCwd?: string): Promise<PromptFile> {
+    const records = await this.list({ kind: 'prompt' }, projectCwd)
+    const needle = nameOrId.trim()
+    const hit = records.find(record => {
+      if (record.meta === undefined) return false
+      const stem = (record.meta.path.split(/[\\/]/).pop() ?? '').replace(/\.md$/i, '')
+      const afterSeq = stem.replace(/^\d+_/, '') // 去掉序号前缀：36_名称 → 名称
+      return String(record.id) === needle || afterSeq === needle || afterSeq.includes(needle)
+    })
+    if (hit === undefined || hit.meta === undefined) {
+      throw new Error(`prompt '${nameOrId}' not found（可用 prompt_list 查看全部）`)
+    }
+    const text = readFileSync(hit.meta.path, 'utf8')
+    const parsed = parsePromptFile(hit.meta.path, text)
+    if (!parsed.ok) throw new Error(`prompt file ${hit.meta.path} parse failed: ${parsed.error}`)
+    return parsed.file
+  }
+
+  /**
+   * 新增模板：写 md 文件（序号自动分配/文件名安全化/同名防覆盖）+ 刷新索引。
+   * 返回索引记录（模型新增 source='agent'，UI 角标提示）。
+   */
+  async promptAdd(
+    input: { name: string, dimension?: string, difficulty?: string, tags?: string[], content: string, fallback?: string, source: 'user' | 'agent', namespace?: MemoryNamespace },
+    projectCwd?: string,
+  ): Promise<MemoryRecord> {
+    const dir = input.namespace === 'project' ? this.promptProjectDir(projectCwd) : this.promptGlobalDir()
+    if (dir === '') throw new Error('cannot write project prompt without a workspace cwd')
+    const path = writePromptFile(dir, input)
+    await this.refreshPromptIndex(projectCwd)
+    const found = (await this.list({ kind: 'prompt' }, projectCwd))
+      .find(record => String(record.id) === String(this.promptIdOf(path)))
+    if (found === undefined) throw new Error('prompt written but index refresh failed')
+    return found
+  }
+
+  /** 删除模板：md 文件与索引一并删除；未命中返回 false。 */
+  async promptRemove(idOrName: string, projectCwd?: string): Promise<boolean> {
+    let file: PromptFile | null = null
+    try {
+      file = await this.promptGet(idOrName, projectCwd)
+    } catch {
+      return false
+    }
+    rmSync(file.path, { force: true })
+    await this.refreshPromptIndex(projectCwd)
+    return true
   }
 }
