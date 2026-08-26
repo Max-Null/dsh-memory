@@ -46,6 +46,11 @@ npm install @max-null/dsh-memory
 
 ## 使用流程（人工确认闸门）
 
+提示词模板库（0.6.0）：`prompt_search / prompt_get / prompt_list / prompt_add` 四个工具管理**模板库**——
+md 文件是唯一事实源（`~/.dsh/prompt-library/*.md` 为 global；`<workspace>/.dsh/prompt-library/` 随工作区分享），
+前端（记忆面板「模板」tab / 模型工具）检索同一份索引；模板存在即生效（`source: agent` 角标标识模型新增），
+**永不注入 system prompt**。
+
 ```
 模型 memory_save     →  status: suggested（只是建议，未生效）
 人 memory_confirm    →  status: approved（已审核；是否常驻注入由独立开关 injected 决定）
