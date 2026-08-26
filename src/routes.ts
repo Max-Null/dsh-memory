@@ -112,6 +112,28 @@ function cwdOf(payload: Record<string, unknown> | null | undefined): string | un
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
+/** 取 memory 服务（未挂载 503 且明确失败）。 */
+function requireMemory(ctx: Context): MemoryEngine {
+  const memory = ctx.get('memory') as MemoryEngine | undefined
+  if (memory === undefined) throw new MemoryApiError('service-unavailable', 'memory service unavailable', 503)
+  return memory
+}
+
+/** 模板记录投影（0.6.0）：不暴露本地文件路径（meta.path 引擎内部使用）。 */
+function promptProjection(record: import('./engine.ts').MemoryRecord): Record<string, unknown> {
+  const meta = record.meta
+  return {
+    id: String(record.id),
+    name: meta?.name ?? '',
+    ...meta?.dimension === undefined ? {} : { dimension: meta.dimension },
+    ...meta?.difficulty === undefined ? {} : { difficulty: meta.difficulty },
+    ...meta === undefined ? {} : { tags: meta.tags },
+    summary: meta?.summary ?? record.content.slice(0, 200),
+    source: meta?.source ?? 'user',
+    namespace: record.namespace,
+  }
+}
+
 /** 挂载 /memory/api 路由（apply 调用）。 */
 export function mountMemoryApi(ctx: Context): void {
   // webServer/webRuntime 由 index.ts 的 inject 声明（Context 类型未扩展，断言访问）
@@ -186,6 +208,61 @@ export function mountMemoryApi(ctx: Context): void {
         : record?.budget === null ? null : DEFAULT_INJECTION_BUDGET
       const summaryChars = typeof record?.summaryChars === 'number' && record.summaryChars > 0 ? record.summaryChars : DEFAULT_SUMMARY_CHARS
       return { self: SELF_DESCRIPTION, ...renderInjection(memory.recallRecords(cwd), budget, summaryChars) }
+    },
+    // ── 提示词模板库（0.6.0）──
+    'prompt.list': async (payload) => {
+      const memory = requireMemory(ctx)
+      const record = (payload ?? {}) as Record<string, unknown>
+      const cwd = cwdOf(record)
+      await memory.refreshPromptIndex(cwd)
+      const namespace = record.namespace === 'project' || record.namespace === 'global' ? record.namespace : undefined
+      const records = await memory.list({ kind: 'prompt', ...namespace === undefined ? {} : { namespace } }, cwd)
+      return records.map(promptProjection)
+    },
+    'prompt.get': (payload) => {
+      const memory = requireMemory(ctx)
+      const record = (payload ?? {}) as Record<string, unknown>
+      const lookup = typeof record.name === 'string' ? record.name : typeof record.id === 'string' ? record.id : ''
+      if (lookup === '') {
+        throw new MemoryApiError('bad-request', 'missing or invalid "id"/"name"')
+      }
+      return memory.promptGet(lookup, cwdOf(record)).then(file => ({
+        name: file.meta.name,
+        ...file.meta.dimension === undefined ? {} : { dimension: file.meta.dimension },
+        ...file.meta.difficulty === undefined ? {} : { difficulty: file.meta.difficulty },
+        tags: file.meta.tags,
+        body: file.body,
+        ...file.fallback === null ? {} : { fallback: file.fallback },
+      }))
+    },
+    'prompt.add': (payload) => {
+      const memory = requireMemory(ctx)
+      const record = (payload ?? {}) as Record<string, unknown>
+      if (typeof record.name !== 'string' || record.name === '') throw new MemoryApiError('bad-request', 'missing or invalid "name"')
+      if (typeof record.content !== 'string' || record.content === '') throw new MemoryApiError('bad-request', 'missing or invalid "content"')
+      return memory.promptAdd({
+        name: record.name,
+        content: record.content,
+        ...typeof record.dimension === 'string' ? { dimension: record.dimension } : {},
+        ...typeof record.difficulty === 'string' ? { difficulty: record.difficulty } : {},
+        ...Array.isArray(record.tags) ? { tags: record.tags.filter((tag: unknown): tag is string => typeof tag === 'string') } : {},
+        ...typeof record.fallback === 'string' ? { fallback: record.fallback } : {},
+        ...record.namespace === 'project' ? { namespace: 'project' } : {},
+        source: 'user',
+      }, cwdOf(record)).then(promptProjection)
+    },
+    'prompt.remove': (payload) => {
+      const memory = requireMemory(ctx)
+      const record = (payload ?? {}) as Record<string, unknown>
+      const lookup = typeof record.name === 'string' ? record.name : typeof record.id === 'string' ? record.id : ''
+      if (lookup === '') {
+        throw new MemoryApiError('bad-request', 'missing or invalid "id"/"name"')
+      }
+      return memory.promptRemove(lookup, cwdOf(record))
+    },
+    'prompt.refresh': (payload) => {
+      const memory = requireMemory(ctx)
+      return memory.refreshPromptIndex(cwdOf((payload ?? {}) as Record<string, unknown>))
     },
   }
 

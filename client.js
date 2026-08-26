@@ -153,6 +153,26 @@ function registerSettingsNavIcon(label) {
 var STRINGS = {
   zh: {
     tabMemory: "\u8BB0\u5FC6",
+    tabPrompt: "\u6A21\u677F",
+    promptEmpty: "\u6682\u65E0\u6A21\u677F\uFF08\u70B9\u300C\u65B0\u589E\u6A21\u677F\u300D\u6216\u5F80 ~/.dsh/prompt-library \u653E md \u6587\u4EF6\uFF09",
+    promptRefresh: "\u5237\u65B0\u7D22\u5F15",
+    promptAdd: "\u65B0\u589E\u6A21\u677F",
+    promptInsert: "\u63D2\u5165\u8F93\u5165\u6846",
+    promptInserted: "\u5DF2\u63D2\u5165",
+    promptInsertUnavailable: "\u65E0\u6D3B\u52A8\u4F1A\u8BDD/\u8F93\u5165\u6846",
+    promptDelete: "\u5220\u9664",
+    promptDeleteConfirm: "\u5220\u9664\u6A21\u677F\uFF08md \u6587\u4EF6\u4E0E\u7D22\u5F15\u4E00\u5E76\u5220\u9664\uFF09\uFF1F",
+    promptFormName: "\u540D\u79F0",
+    promptFormContent: "\u6B63\u6587",
+    promptFormDimension: "\u7EF4\u5EA6\uFF08\u524D\u7AEF/\u540E\u7AEF/\u2026\uFF09",
+    promptFormDifficulty: "\u96BE\u5EA6\uFF08L1-L5/LX\uFF09",
+    promptFormTags: "\u6807\u7B7E\uFF08\u9017\u53F7\u5206\u9694\uFF09",
+    promptFormFallback: "\u5907\u7528\u63D0\u793A\u8BCD",
+    promptFormSubmit: "\u5199\u5165\u6A21\u677F\u5E93",
+    promptFormCancel: "\u53D6\u6D88",
+    promptSearch: "\u641C\u7D22\u6A21\u677F\u2026",
+    promptAgent: "agent",
+    promptFilterAll: "\u5168\u90E8",
     memorySearch: "\u641C\u7D22\u8BB0\u5FC6\u2026",
     empty: "\u9ED1\u6697\u4E2D\u672A\u89C1\u7075\u5149",
     confirm: "\u786E\u8BA4",
@@ -178,6 +198,26 @@ var STRINGS = {
   },
   en: {
     tabMemory: "Memory",
+    tabPrompt: "Templates",
+    promptEmpty: 'No templates yet (use "Add template" or drop md files into ~/.dsh/prompt-library)',
+    promptRefresh: "Refresh index",
+    promptAdd: "Add template",
+    promptInsert: "Insert into input",
+    promptInserted: "Inserted",
+    promptInsertUnavailable: "No active session/input",
+    promptDelete: "Delete",
+    promptDeleteConfirm: "Delete this template (md file + index)?",
+    promptFormName: "Name",
+    promptFormContent: "Body",
+    promptFormDimension: "Dimension (\u524D\u7AEF/\u540E\u7AEF/\u2026)",
+    promptFormDifficulty: "Difficulty (L1-L5/LX)",
+    promptFormTags: "Tags (comma separated)",
+    promptFormFallback: "Fallback prompt",
+    promptFormSubmit: "Write to library",
+    promptFormCancel: "Cancel",
+    promptSearch: "Search templates\u2026",
+    promptAgent: "agent",
+    promptFilterAll: "All",
     memorySearch: "Search memory\u2026",
     empty: "No spark in the dark",
     confirm: "Confirm",
@@ -298,9 +338,240 @@ var memoryApi = {
   },
   injectionPreview(cwd) {
     return api("injectionPreview", { ...cwd === void 0 ? {} : { cwd } });
+  },
+  // ── 提示词模板库（0.6.0）──
+  promptList(cwd) {
+    return api("prompt.list", { ...cwd === void 0 ? {} : { cwd } });
+  },
+  promptGet(nameOrId, cwd) {
+    return api("prompt.get", { name: nameOrId, ...cwd === void 0 ? {} : { cwd } });
+  },
+  promptAdd(payload, cwd) {
+    return api("prompt.add", { ...payload, ...cwd === void 0 ? {} : { cwd } });
+  },
+  promptRemove(nameOrId, cwd) {
+    return api("prompt.remove", { name: nameOrId, ...cwd === void 0 ? {} : { cwd } });
+  },
+  promptRefresh(cwd) {
+    return api("prompt.refresh", { ...cwd === void 0 ? {} : { cwd } });
   }
 };
 var ORGANIZE_PROMPT = "\u8BF7\u6574\u7406\u6211\u7684\u8BB0\u5FC6\u5E93\uFF1A\u7528 memory_list \u67E5\u770B\u5168\u90E8\u8BB0\u5FC6\u3002\u6574\u7406\u89C4\u5219\uFF08\u5FC5\u987B\u6267\u884C\uFF09\uFF1A\u2460\u540C\u7C7B\u6761\u76EE\u5408\u5E76\u2014\u2014\u5DE5\u4F5C\u4E60\u60EF/\u7EA6\u5B9A\u7C7B\u591A\u6761\u5408\u5E76\u4E3A\u4E00\u6761\uFF08\u5185\u5BB9\u7528 \u2460\u2461\u2462 \u5E76\u5217\uFF0C\u907F\u514D\u788E\u7247\u5316\uFF09\uFF1B\u2461\u4E0E\u300C[\u8BB0\u5FC6\u7CFB\u7EDF\u81EA\u8FF0]\u300D\uFF08\u4F60\u4E0A\u4E0B\u6587\u4E2D\u7684\u8BB0\u5FC6\u673A\u5236\u8BF4\u660E\uFF09\u5185\u5BB9\u91CD\u590D\u7684\u63D2\u4EF6\u4ECB\u7ECD\u6761\u76EE\uFF08\u5982 dsh-memory \u63D2\u4EF6\u53D1\u5E03\u4FE1\u606F\uFF09\u5E94\u5220\u9664\u2014\u2014\u673A\u5236\u8BF4\u660E\u5DF2\u7531\u7CFB\u7EDF\u5E38\u9A7B\u63D0\u4F9B\uFF0C\u65E0\u9700\u7528\u6237\u5B58\u50A8\uFF1B\u2462\u5BF9\u8FC7\u65F6\u3001\u9519\u8BEF\u6216\u5DF2\u53D8\u5316\u7684\u5185\u5BB9\u7528 memory_update \u4FEE\u6B63\uFF08\u4F1A\u91CD\u7F6E\u4E3A\u5F85\u5BA1\u6838\uFF09\uFF1B\u2463\u7CBE\u7B80\u5197\u957F\u5185\u5BB9\uFF0C\u4E3A\u6BCF\u6761\u8865\u5145\u6216\u4FEE\u6B63 keywords\uFF1B\u2464\u9700\u8981\u5220\u9664\u7684\u7528 memory_forget\uFF0C\u9700\u8981\u65B0\u589E\u7684\u7528 memory_save\u3002\u5224\u65AD\u5185\u5BB9\u662F\u5426\u8FC7\u65F6\u7684\u65B9\u6CD5\uFF1A\u628A\u8BB0\u5FC6\u91CC\u63D0\u5230\u7684\u5DE5\u5177\u540D/\u6570\u91CF\u4E0E\u4F60\u5F53\u524D\u5B9E\u9645\u53EF\u7528\u7684\u8BB0\u5FC6\u5DE5\u5177\u5BF9\u7167\u2014\u2014\u4F60\u5F53\u524D\u53EF\u7528\uFF1Amemory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update\uFF08\u5171 6 \u4E2A\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u4E2D\u7684\u5DE5\u5177\u5217\u8868\u3001\u6570\u91CF\u3001\u6D41\u7A0B\u4E0E\u6B64\u4E0D\u7B26\u5373\u4E3A\u8FC7\u65F6\uFF0C\u7528 memory_update \u4FEE\u6B63\u3002\u6539\u52A8\u5168\u90E8\u843D\u5728 suggested \u7B49\u5F85\u5BA1\u6838\uFF08\u4E0D\u8981\u8C03\u7528 memory_confirm\uFF09\uFF0C\u5B8C\u6210\u540E\u7528\u4E00\u53E5\u8BDD\u6C47\u62A5\u6574\u7406\u7ED3\u679C\u3002";
+function insertIntoInput(ctx, text) {
+  const sessions = ctx.get?.("sessions");
+  const conversation = ctx.get?.("conversation");
+  if (sessions === void 0 || conversation?.input?.for === void 0) return { ok: false, reason: "unavailable" };
+  const current = sessions.list?.getSnapshot?.()?.current;
+  if (current === void 0 || current === "") return { ok: false, reason: "no-active-session" };
+  const actx = sessions.scope(current);
+  if (actx === void 0) return { ok: false, reason: "no-scope" };
+  const input = conversation.input.for(actx);
+  if (input === void 0) return { ok: false, reason: "no-input" };
+  try {
+    input.setDraft(text);
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "setDraft-failed" };
+  }
+}
+function PromptView(props) {
+  const t = useT();
+  const [items, setItems] = (0, import_react.useState)([]);
+  const [query, setQuery] = (0, import_react.useState)("");
+  const [expanded, setExpanded] = (0, import_react.useState)(null);
+  const [detail, setDetail] = (0, import_react.useState)(null);
+  const [note, setNote] = (0, import_react.useState)(null);
+  const [formOpen, setFormOpen] = (0, import_react.useState)(false);
+  const [form, setForm] = (0, import_react.useState)({});
+  const reload = async () => {
+    try {
+      setItems(await memoryApi.promptList(props.cwd));
+    } catch {
+    }
+  };
+  (0, import_react.useEffect)(() => {
+    if (props.visible) void reload();
+  }, [props.visible]);
+  const flash = (text) => {
+    setNote(text);
+    setTimeout(() => setNote(null), 2e3);
+  };
+  const q = query.trim().toLowerCase();
+  const filtered = items.filter((item) => {
+    if (q === "") return true;
+    const hay = [
+      String(item.name ?? ""),
+      String(item.dimension ?? ""),
+      String(item.difficulty ?? ""),
+      (item.tags ?? []).join(" "),
+      String(item.summary ?? "")
+    ].join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+  const openPrompt = async (item) => {
+    const key = String(item.id ?? item.name);
+    if (expanded === key) {
+      setExpanded(null);
+      setDetail(null);
+      return;
+    }
+    setExpanded(key);
+    try {
+      setDetail(await memoryApi.promptGet(String(item.name ?? item.id), props.cwd));
+    } catch {
+      setDetail(null);
+    }
+  };
+  const insert = (item) => {
+    const text = String(detail?.body ?? item.summary ?? "");
+    const result = insertIntoInput(props.ctx, text);
+    flash(result.ok ? t("promptInserted") : `${t("promptInsertUnavailable")} (${result.reason ?? "?"})`);
+  };
+  const remove = async (item) => {
+    if (!window.confirm(t("promptDeleteConfirm"))) return;
+    await memoryApi.promptRemove(String(item.name ?? item.id), props.cwd).catch(() => null);
+    await reload();
+  };
+  const submitForm = async () => {
+    if ((form.name ?? "").trim() === "" || (form.content ?? "").trim() === "") return;
+    await memoryApi.promptAdd({
+      name: form.name.trim(),
+      content: form.content,
+      ...(form.dimension ?? "").trim() === "" ? {} : { dimension: form.dimension.trim() },
+      ...(form.difficulty ?? "").trim() === "" ? {} : { difficulty: form.difficulty.trim() },
+      ...(form.tags ?? "").trim() === "" ? {} : { tags: form.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag !== "") },
+      ...(form.fallback ?? "").trim() === "" ? {} : { fallback: form.fallback }
+    }, props.cwd);
+    setForm({});
+    setFormOpen(false);
+    await reload();
+  };
+  const field = (key, hint, multiline = false) => (0, import_react.createElement)(multiline ? "textarea" : "input", {
+    key,
+    value: form[key] ?? "",
+    placeholder: hint,
+    rows: multiline ? 4 : void 0,
+    onChange: (event) => {
+      setForm((prev) => ({ ...prev, [key]: event.target.value }));
+    },
+    style: {
+      width: "100%",
+      boxSizing: "border-box",
+      padding: "6px 10px",
+      fontSize: 12,
+      fontFamily: "inherit",
+      background: "var(--dsw-alias-bg-layer-1, #0f141d)",
+      border: "1px solid var(--dsw-alias-border-l2, #1e2836)",
+      borderRadius: 6,
+      color: "var(--dsw-alias-label-primary, #d8e0ea)",
+      outline: "none"
+    }
+  });
+  return (0, import_react.createElement)(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflowY: "auto" } },
+    (0, import_react.createElement)(
+      "div",
+      { style: { display: "flex", gap: 6 } },
+      (0, import_react.createElement)("button", { type: "button", style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent }, onClick: () => {
+        setFormOpen((open) => !open);
+      } }, t("promptAdd")),
+      (0, import_react.createElement)("button", { type: "button", style: ssid.btn, onClick: () => {
+        void reload();
+      } }, t("promptRefresh")),
+      (0, import_react.createElement)("input", {
+        value: query,
+        onChange: (event) => {
+          setQuery(event.target.value);
+        },
+        placeholder: t("promptSearch"),
+        style: {
+          flex: 1,
+          padding: "6px 10px",
+          fontSize: 12.5,
+          boxSizing: "border-box",
+          background: "var(--dsw-alias-bg-layer-1, #0f141d)",
+          border: "1px solid var(--dsw-alias-border-l2, #1e2836)",
+          borderRadius: 8,
+          color: "var(--dsw-alias-label-primary, #d8e0ea)",
+          outline: "none"
+        }
+      }),
+      note === null ? null : (0, import_react.createElement)("span", { style: { ...ssid.muted, alignSelf: "center" } }, note)
+    ),
+    formOpen ? (0, import_react.createElement)(
+      "div",
+      { style: ssid.card },
+      (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", flexDirection: "column", gap: 6 } },
+        field("name", t("promptFormName")),
+        field("dimension", t("promptFormDimension")),
+        field("difficulty", t("promptFormDifficulty")),
+        field("tags", t("promptFormTags")),
+        field("content", t("promptFormContent"), true),
+        field("fallback", t("promptFormFallback"), true),
+        (0, import_react.createElement)(
+          "div",
+          { style: { display: "flex", gap: 6, justifyContent: "flex-end" } },
+          (0, import_react.createElement)("button", { type: "button", style: ssid.btn, onClick: () => {
+            setFormOpen(false);
+            setForm({});
+          } }, t("promptFormCancel")),
+          (0, import_react.createElement)("button", { type: "button", style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent }, onClick: () => {
+            void submitForm();
+          } }, t("promptFormSubmit"))
+        )
+      )
+    ) : null,
+    filtered.length === 0 ? (0, import_react.createElement)("div", { style: ssid.empty }, t("promptEmpty")) : filtered.map((item) => {
+      const key = String(item.id ?? item.name);
+      const open = expanded === key;
+      return (0, import_react.createElement)(
+        "div",
+        { key, style: ssid.card },
+        (0, import_react.createElement)(
+          "div",
+          { style: { cursor: "pointer", display: "flex", flexDirection: "column", gap: 4 }, onClick: () => {
+            void openPrompt(item);
+          } },
+          (0, import_react.createElement)(
+            "div",
+            { style: { display: "flex", alignItems: "baseline", gap: 6 } },
+            (0, import_react.createElement)("span", { style: { ...ssid.text, fontWeight: 600 } }, String(item.name ?? "")),
+            item.source === "agent" ? (0, import_react.createElement)("span", { style: { fontSize: 10, color: "#f7c94f", fontWeight: 600 } }, t("promptAgent")) : null,
+            (0, import_react.createElement)(
+              "span",
+              { style: { ...ssid.muted, fontSize: 10.5 } },
+              [String(item.dimension ?? ""), String(item.difficulty ?? "")].filter((part) => part !== "").join(" \xB7 ")
+            )
+          ),
+          (item.tags ?? []).length > 0 ? (0, import_react.createElement)(
+            "div",
+            { style: { display: "flex", gap: 4, flexWrap: "wrap" } },
+            item.tags.slice(0, 6).map((tag) => (0, import_react.createElement)("span", { key: tag, style: { fontSize: 10, padding: "1px 6px", borderRadius: 999, border: "1px solid var(--dsw-alias-border-l2, #1e2836)", color: "var(--dsw-alias-label-secondary, #67748a)" } }, tag))
+          ) : null,
+          (0, import_react.createElement)("span", { style: ssid.muted }, String(item.summary ?? "").slice(0, 120))
+        ),
+        open ? (0, import_react.createElement)(
+          "div",
+          { style: { marginTop: 6 } },
+          detail === null ? (0, import_react.createElement)("div", { style: ssid.muted }, "\u2026") : (0, import_react.createElement)("pre", { style: { ...ssid.muted, whiteSpace: "pre-wrap", margin: 0, fontSize: 12, maxHeight: 180, overflowY: "auto" } }, String(detail.body ?? "")),
+          (0, import_react.createElement)(
+            "div",
+            { style: { display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" } },
+            (0, import_react.createElement)("button", { type: "button", style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent }, onClick: () => {
+              insert(item);
+            } }, t("promptInsert")),
+            (0, import_react.createElement)("button", { type: "button", style: { ...ssid.btn, color: "#f76f4f", borderColor: "#f76f4f" }, onClick: () => {
+              void remove(item);
+            } }, t("promptDelete"))
+          )
+        ) : null
+      );
+    })
+  );
+}
 var DAY_MS = 864e5;
 var COLD_DAYS = 30;
 function fmtDate(ms) {
@@ -312,6 +583,7 @@ function isCold(usedAt, now = Date.now()) {
 }
 function MemoryView(props) {
   const t = useT();
+  const [mode, setMode] = (0, import_react.useState)("mem");
   const [records, setRecords] = (0, import_react.useState)([]);
   const [query, setQuery] = (0, import_react.useState)("");
   const [namespace, setNamespace] = (0, import_react.useState)(null);
@@ -409,9 +681,32 @@ function MemoryView(props) {
     { key: "ondemand", label: t("groupOnDemand"), items: filtered.filter((record) => record.status === "approved" && !record.injected) },
     { key: "injected", label: t("groupInjected"), items: filtered.filter((record) => record.status === "approved" && record.injected) }
   ].filter((group) => group.items.length > 0);
+  const modeTabs = (0, import_react.createElement)(
+    "div",
+    { style: { display: "flex", gap: 4 } },
+    ["mem", "prompt"].map(
+      (m) => (0, import_react.createElement)("button", {
+        key: m,
+        type: "button",
+        onClick: () => {
+          setMode(m);
+        },
+        style: { flex: 1, ...ssid.btn, ...mode === m ? { color: ssid.accent, borderColor: ssid.accent } : {} }
+      }, m === "mem" ? t("tabMemory") : t("tabPrompt"))
+    )
+  );
+  if (mode === "prompt") {
+    return (0, import_react.createElement)(
+      "div",
+      { style: ssid.wrap },
+      modeTabs,
+      (0, import_react.createElement)(PromptView, { visible: props.visible, cwd: props.cwd, ctx: props.ctx })
+    );
+  }
   return (0, import_react.createElement)(
     "div",
     { style: ssid.wrap },
+    modeTabs,
     (0, import_react.createElement)(
       "div",
       { style: ssid.header },
