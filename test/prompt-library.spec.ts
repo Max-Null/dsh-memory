@@ -169,4 +169,18 @@ describe('engine 模板索引（0.6.0）', () => {
     expect(promptHits.every(hit => hit.record.kind === 'prompt' || hit.record.kind === undefined)).toBe(true)
     await fiber.dispose()
   })
+
+  it('M2 工具：prompt_* 注册；prompt_add 写文件（source=agent）', async () => {
+    const { ctx, promptRoot, fiber } = await setup()
+    for (const name of ['prompt_search', 'prompt_get', 'prompt_list', 'prompt_add']) {
+      expect(ctx.tools.get(name)?.name).toBe(name)
+    }
+    // engine 侧行为已在 M1 用例覆盖（refresh/promptAdd/promptGet/promptRemove/search kind 隔离）；
+    // 此处只验证工具注册与文件落盘（execute 包装形状随 dsh-tools 版本而异，不在此层断言）。
+    const addCall = ctx.tools.get('prompt_add')!
+    expect(typeof addCall.execute).toBe('function')
+    await ctx.memory.promptAdd({ name: '工具落盘模板', content: '正文', source: 'agent' })
+    expect(existsSync(join(promptRoot, '1_工具落盘模板.md'))).toBe(true)
+    await fiber.dispose()
+  })
 })

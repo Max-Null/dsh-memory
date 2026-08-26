@@ -75,6 +75,22 @@ const HIT_SCHEMA = {
   },
 } as const
 
+/** 模板记录（0.6.0）：不暴露本地文件路径（meta.path 引擎内部使用）。 */
+const PROMPT_RECORD_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true },
+    name: { type: 'string', required: true },
+    dimension: { type: 'string' },
+    difficulty: { type: 'string' },
+    tags: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string', required: true },
+    source: { type: 'string', enum: ['user', 'agent'], required: true },
+    namespace: { type: 'string', enum: ['global', 'project'], required: true },
+  },
+} as const
+
 function recordValue(record: MemoryRecord): MemoryToolRecord {
   return {
     id: String(record.id),
@@ -91,6 +107,32 @@ function recordValue(record: MemoryRecord): MemoryToolRecord {
 
 function hitValue(hit: MemoryHit): MemoryToolHit {
   return { record: recordValue(hit.record), score: hit.score }
+}
+
+/** 模板记录投影（0.6.0）：不暴露本地路径；summary 供模型判断是否取全文。 */
+interface PromptToolRecord {
+  id: string
+  name: string
+  dimension?: string
+  difficulty?: string
+  tags: string[]
+  summary: string
+  source: 'user' | 'agent'
+  namespace: 'global' | 'project'
+}
+
+function promptValue(record: MemoryRecord): PromptToolRecord {
+  const meta = record.meta
+  return {
+    id: String(record.id),
+    name: meta?.name ?? '',
+    ...meta?.dimension === undefined ? {} : { dimension: meta.dimension },
+    ...meta?.difficulty === undefined ? {} : { difficulty: meta.difficulty },
+    tags: meta?.tags ?? [],
+    summary: meta?.summary ?? record.content.slice(0, 200),
+    source: meta?.source ?? 'user',
+    namespace: record.namespace,
+  }
 }
 
 // 0.3.0：审核语义双语（host 侧 GUIDANCE 无法跟随 DSH locale 动态切换，
@@ -242,6 +284,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       query: { type: 'string', required: true, description: 'Keyword query. 关键词查询.' },
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
       status: { type: 'string', enum: ['suggested', 'approved'], description: 'Restrict to one review status. 限定审核状态.' },
+      kind: { type: 'string', enum: ['fact', 'prompt'], description: 'Restrict by record kind — fact (memories, default) or prompt (templates; use prompt_search instead). 按记录类别过滤：fact=记忆（默认）/ prompt=模板（模板请用 prompt_search）.' },
     },
     output: {
       schema: { type: 'array', items: HIT_SCHEMA },
@@ -251,9 +294,137 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return memory.search(args.query, {
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
+        ...args.kind === undefined ? {} : { kind: args.kind },
       }, execProjectCwd(exec)).then(hits => hits.map(hitValue))
     },
     presentCall: args => present('Search memory', 'read', args.query),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'prompt_search',
+    description: 'Search prompt templates by keyword plus dimension/difficulty/tag filters. Returns matching summaries; call prompt_get for the full text. 按关键词+维度/难度/标签检索提示词模板，返回匹配摘要；取全文用 prompt_get。',
+    parameters: {
+      query: { type: 'string', required: true, description: 'Keyword query (name/tag/body). 关键词查询（名称/标签/正文）.' },
+      dimension: { type: 'string', description: 'Filter by dimension (前端/后端/…). 按维度过滤.' },
+      difficulty: { type: 'string', description: 'Filter by difficulty (L1-L5/LX). 按难度过滤.' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'Filter by any of these tags. 按任一标签过滤.' },
+      namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
+    },
+    output: {
+      schema: { type: 'array', items: PROMPT_RECORD_SCHEMA },
+      render: (_args, value) => renderJson(value),
+    },
+    execute(args, exec) {
+      return memory.refreshPromptIndex(execProjectCwd(exec)).then(async () => {
+        const all = await memory.list({ kind: 'prompt', ...args.namespace === undefined ? {} : { namespace: args.namespace } }, execProjectCwd(exec))
+        const filtered = all.filter(record => {
+          const meta = record.meta
+          if (meta === undefined) return true
+          if (args.dimension !== undefined && args.dimension !== '' && meta.dimension !== args.dimension) return false
+          if (args.difficulty !== undefined && args.difficulty !== '' && meta.difficulty !== args.difficulty) return false
+          if (args.tags !== undefined && args.tags.length > 0 && !args.tags.some(tag => meta.tags.includes(tag))) return false
+          return true
+        })
+        const quoted = JSON.stringify(args.query ?? '')
+        const hits = await memory.search(quoted, { kind: 'prompt', ...args.namespace === undefined ? {} : { namespace: args.namespace } }, execProjectCwd(exec))
+        const hitIds = new Set(hits.map(hit => String(hit.record.id)))
+        // 过滤器命中列表按检索分排序在前，未命中关键词的过滤命中排后（按名称）
+        const byQuery = filtered.filter(record => hitIds.has(String(record.id)))
+        const rest = filtered
+          .filter(record => !hitIds.has(String(record.id)))
+          .sort((a, b) => (a.meta?.name ?? '').localeCompare(b.meta?.name ?? ''))
+        return [...byQuery, ...rest].map(promptValue)
+      })
+    },
+    presentCall: args => present('Search prompt library', 'read', args.query),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'prompt_get',
+    description: 'Fetch a prompt template full text by id or name (name matches the file stem without the seq prefix). 按 id 或名称取模板全文（名称 = 文件名去序号部分）。',
+    parameters: {
+      nameOrId: { type: 'string', required: true, description: 'Template id or name. 模板 id 或名称.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {
+        name: { type: 'string', required: true },
+        dimension: { type: 'string' },
+        difficulty: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        body: { type: 'string', required: true },
+        fallback: { type: 'string' },
+      } },
+      render: (_args, value) => renderJson(value),
+    },
+    execute(args, exec) {
+      return memory.promptGet(args.nameOrId, execProjectCwd(exec)).then(file => ({
+        name: file.meta.name,
+        ...file.meta.dimension === undefined ? {} : { dimension: file.meta.dimension },
+        ...file.meta.difficulty === undefined ? {} : { difficulty: file.meta.difficulty },
+        tags: file.meta.tags,
+        body: file.body,
+        ...file.fallback === null ? {} : { fallback: file.fallback },
+      }))
+    },
+    presentCall: args => present('Get prompt template', 'read', args.nameOrId),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'prompt_list',
+    description: 'List every prompt template index (no full text), optionally filtered by dimension/difficulty/tag. 列出全部模板索引（不含全文），可按维度/难度/标签过滤。',
+    parameters: {
+      dimension: { type: 'string', description: '按维度过滤.' },
+      difficulty: { type: 'string', description: '按难度过滤.' },
+      tags: { type: 'array', items: { type: 'string' }, description: '按任一标签过滤.' },
+      namespace: { type: 'string', enum: ['global', 'project'], description: '限定单个命名空间.' },
+    },
+    output: {
+      schema: { type: 'array', items: PROMPT_RECORD_SCHEMA },
+      render: (_args, value) => renderJson(value),
+    },
+    execute(args, exec) {
+      return memory.refreshPromptIndex(execProjectCwd(exec)).then(() => memory.list({ kind: 'prompt', ...args.namespace === undefined ? {} : { namespace: args.namespace } }, execProjectCwd(exec))).then(records =>
+        records.filter(record => {
+          const meta = record.meta
+          if (meta === undefined) return false
+          if (args.dimension !== undefined && args.dimension !== '' && meta.dimension !== args.dimension) return false
+          if (args.difficulty !== undefined && args.difficulty !== '' && meta.difficulty !== args.difficulty) return false
+          if (args.tags !== undefined && args.tags.length > 0 && !args.tags.some(tag => meta.tags.includes(tag))) return false
+          return true
+        }).sort((a, b) => (a.meta?.seq ?? 0) - (b.meta?.seq ?? 0)).map(promptValue))
+    },
+    presentCall: () => present('List prompt templates', 'read'),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'prompt_add',
+    description: 'Add one prompt template to the library (writes a metadata-marked md file; source=agent is surfaced in the UI). 新增一条提示词模板（写元数据 md 文件；source=agent 在 UI 角标提示）。',
+    parameters: {
+      name: { type: 'string', required: true, description: 'Template name (also the file stem). 模板名称（也是文件名）.' },
+      content: { type: 'string', required: true, description: 'The prompt body. 提示词正文.' },
+      dimension: { type: 'string', description: '维度（前端/后端/…）.' },
+      difficulty: { type: 'string', description: '难度（L1-L5/LX）.' },
+      tags: { type: 'array', items: { type: 'string' }, description: '检索用标签.' },
+      fallback: { type: 'string', description: '可选备用提示词.' },
+      namespace: { type: 'string', enum: ['global', 'project'], description: '默认 global.' },
+    },
+    output: {
+      schema: PROMPT_RECORD_SCHEMA,
+      render: (_args, value) => renderJson(value),
+    },
+    execute(args, exec) {
+      return memory.promptAdd({
+        name: args.name,
+        content: args.content,
+        ...args.dimension === undefined ? {} : { dimension: args.dimension },
+        ...args.difficulty === undefined ? {} : { difficulty: args.difficulty },
+        ...args.tags === undefined ? {} : { tags: args.tags },
+        ...args.fallback === undefined ? {} : { fallback: args.fallback },
+        ...args.namespace === undefined ? {} : { namespace: args.namespace },
+        source: 'agent',
+      }, execProjectCwd(exec)).then(promptValue)
+    },
+    presentCall: args => present('Add prompt template', 'other', args.name),
   }))
 
   ctx.tools.register(defineTool({

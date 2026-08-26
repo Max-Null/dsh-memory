@@ -38,10 +38,16 @@ export type MemoryStatus = 'suggested' | 'approved'
  */
 export type MemoryKind = 'fact' | 'prompt'
 
-/** prompt 索引记录的附加元数据（与 md 文件 frontmatter 对齐）。 */
+/** prompt 索引记录的附加元数据（与 md 文件 frontmatter 对齐，工具/UI 直接取用）。 */
 export interface PromptMetaIndex {
   seq?: number
-  /** md 文件绝对路径。 */
+  name: string
+  dimension?: string
+  difficulty?: string
+  tags: string[]
+  /** 索引摘要（正文前 200 字）。 */
+  summary: string
+  /** md 文件绝对路径（引擎内部使用；工具输出不暴露）。 */
   path: string
   /** 索引时的文件 mtime（惰性刷新比对）。 */
   mtime: number
@@ -139,6 +145,11 @@ const blockSchema = z.object({
   kind: z.enum(['fact', 'prompt']).optional(),
   meta: z.object({
     seq: z.number().optional(),
+    name: z.string(),
+    dimension: z.string().optional(),
+    difficulty: z.string().optional(),
+    tags: z.array(z.string()),
+    summary: z.string(),
     path: z.string(),
     mtime: z.number(),
     source: z.enum(['user', 'agent']),
@@ -750,7 +761,17 @@ export class MemoryEngine extends Service {
         createdAt: prev?.createdAt ?? now,
         updatedAt: now,
         kind: 'prompt',
-        meta: { seq: file.meta.seq, path: file.path, mtime: file.mtime, source: file.meta.source },
+        meta: {
+          seq: file.meta.seq,
+          name: file.meta.name,
+          dimension: file.meta.dimension,
+          difficulty: file.meta.difficulty,
+          tags: file.meta.tags,
+          summary: file.summary,
+          path: file.path,
+          mtime: file.mtime,
+          source: file.meta.source,
+        },
       }
       await table.put(id, block)
       changed++
