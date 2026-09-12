@@ -13,6 +13,17 @@ This plugin belongs to the **`@max-null/*` family** — a set of plugins that to
 3. **明文是人机共享的审计窗口**：记忆是可读文本，模型可自检其是否过期或出错（规划中的 v2）。
 4. **确定性且缓存安全**：BM25 关键词检索是存储的纯函数、无 LLM 调用；固定指引进 system-prompt section，`approved + injected` 记忆进 recall context（global 全量 + 当前会话工作区），逐条为单行摘要并按注入预算截断（超预算按最近使用优先，省略数在面板可见）。
 
+## 截图
+
+装完后在设置里多出「记忆」一项，可查看与管理跨会话记忆：
+
+**入口：** 设置 → 记忆
+
+| 设置入口与面板 |
+|---|
+| ![设置 → 记忆](docs/shots/memory-settings-1.png) |
+
+
 ## 用法
 
 ```bash
