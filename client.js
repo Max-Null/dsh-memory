@@ -94,8 +94,8 @@ var BRAIN_PATHS = [
 ];
 function brainIcon() {
   return (0, import_react.createElement)("svg", {
-    width: 14,
-    height: 14,
+    width: 22,
+    height: 22,
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "#8b5cf6",

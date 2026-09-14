@@ -88,14 +88,17 @@ const BRAIN_PATHS = [
   'M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z',
 ]
 /**
- * 侧栏 tab 图标（ReactNode）：与 better-sidebar 内置 tab 同风格——彩色线性图标、14px。
- * 内置那批各自硬编码品牌色、不跟随主题；我们原先是 15px + `currentColor`，实测
- * 图标偏大（卡片高 65 vs 内置 68）且颜色发灰（2026-09-14 用户要求匹配内置风格）。
- * 设置页导航那处的 mask 走 BRAIN_MASK_SVG（`background: currentColor`），不受这里影响。
+ * 侧栏 tab 图标（ReactNode）：与 DSH 原生右栏同风格——彩色线性图标、22px。
+ *
+ * 尺寸取 22 的依据：原生右栏「开始」页的图标容器是
+ * `.geFEbW_entryIcon { width: 26px; height: 26px; display: flex; align-items: center }`，
+ * 自带占位图标是 22px——整列基准即 22（2026-09-14 用户指「尺寸 14 不太对，其他都在 22 左右」）。
+ * 颜色按内置风格硬编码（内置也不跟随主题）。设置页导航那处的 mask 走 BRAIN_MASK_SVG
+ * （`background: currentColor`），不受这里影响。
  */
 function brainIcon(): ReactNode {
   return createElement('svg', {
-    width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none',
+    width: 22, height: 22, viewBox: '0 0 24 24', fill: 'none',
     stroke: '#8b5cf6', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
   }, BRAIN_PATHS.map((d, index) => createElement('path', { key: index, d })))
 }
