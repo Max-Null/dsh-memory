@@ -8,9 +8,9 @@ This plugin belongs to the **`@max-null/*` family** — a set of plugins that to
 
 ## 设计原则
 
-1. **人是所有者**：模型只能写入 `suggested` 状态的记忆，绝不自我提升；只有人工确认（`setStatus`）才能让记忆生效。
+1. **写入即生效，人是例外干预者**：模型写入的记忆直接生效（`approved`），不再逐条等人放行；人保留随时查看、改写、删除、钉住或回滚的能力——人不在场不等于失控。
 2. **可观测先于精准**：每条记忆是明文，`memory_list` 随时可见、`memory_forget` 随时删除——不存在"静默暗礁"。
-3. **明文是人机共享的审计窗口**：记忆是可读文本，模型可自检其是否过期或出错（规划中的 v2）。
+3. **明文是人机共享的审计窗口**：记忆是可读文本，模型可自检其是否过期（有效性锚点会在所绑环境值变化后标记 `stale`），人可随时查看与改写。
 4. **确定性且缓存安全**：BM25 关键词检索是存储的纯函数、无 LLM 调用；固定指引进 system-prompt section，`approved + injected` 记忆进 recall context（global 全量 + 当前会话工作区），逐条为单行摘要并按注入预算截断（超预算按最近使用优先，省略数在面板可见）。
 
 ## 截图
@@ -55,7 +55,7 @@ npm install @max-null/dsh-memory
 
 两个根都可用 config 覆盖（`globalRoot` / `projectRoot`）。`memory_list` / `memory_search` 不带 `namespace` 过滤时会同时查两层。旧版双重前缀文件名（`memory_project_memory_project_<hash>.json`）在打开时自动迁移为规范名。
 
-## 使用流程（人工确认闸门）
+## 使用流程（写入即生效，人为例外干预）
 
 提示词模板库（0.6.0）：`prompt_search / prompt_get / prompt_list / prompt_add` 四个工具管理**模板库**——
 md 文件是唯一事实源（`~/.dsh/prompt-library/*.md` 为 global；`<workspace>/.dsh/prompt-library/` 随工作区分享），
@@ -63,14 +63,19 @@ md 文件是唯一事实源（`~/.dsh/prompt-library/*.md` 为 global；`<worksp
 **永不注入 system prompt**。
 
 ```
-模型 memory_save     →  status: suggested（只是建议，未生效）
-人 memory_confirm    →  status: approved（已审核；是否常驻注入由独立开关 injected 决定）
-人（面板/开关）       →  injected: true（每轮注入：global + 当前会话工作区，摘要化 + 预算截断）
-memory_search        →  关键词/语义召回任意状态的记忆（命中标记 lastUsedAt 冷热追踪）
-memory_forget        →  随时删除
+模型 memory_save     →  status: approved，立即生效；命中密钥/凭据规则则隔离（不进检索也不进注入）
+memory_search        →  关键词/语义召回（只搜记忆；模板走 prompt_search 通道，不会混进候选池）
+命中累计 2 次         →  injected: true（自动打开常驻：global + 当前会话工作区，摘要化 + 预算截断）
+30 天未再命中         →  自动撤下常驻（只撤自动开的；人工动过的开关双向豁免）
+人（面板 / 开关）     →  钉住 / 删除 / 放行隔离记录 / 回滚
+memory_forget        →  随时删除（删除始终是人的动作）
 ```
 
-模型**永远不能自我提升**一条记忆——`memory_save` 只写 `suggested`，只有人在明确要求时（`memory_confirm`）才能让它生效。这保证了记忆不是黑盒：人随时能看、能改、能删。
+两条自动规则撑起淘汰机制：**反复被检索命中**是它值得每轮付费的证据，**长期不再被命中**则自动退出常驻。两者都不删除任何内容——记忆不会无限累积，也不会被系统自行清空。
+
+记忆还可声明**有效性锚点**（环境变量 / 工具清单 / 插件版本）：所绑的值变化后，这条记忆被标记 `stale` 并撤下常驻，检索结果里也带出失效提示——环境变了，旧结论就不再被当成仍然正确。
+
+模型写入不需要人点头，但**人始终能看见并推翻**：面板按「隔离区 / 常驻 / 冷数据」分组，被隔离的记录必须由人放行才会重新进入检索。
 
 ## 为什么明文 + BM25，而不是向量检索
 
