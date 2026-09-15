@@ -181,26 +181,34 @@ const STRINGS = {
     promptFilterAll: '全部',
     memorySearch: '搜索记忆…',
     empty: '黑暗中未见灵光',
-    confirm: '确认',
+    confirm: '放行',
     forget: '删除',
-    groupPending: '待审核',
-    groupOnDemand: '已审核 · 按需',
+    groupQuarantine: '隔离区',
+    groupQuarantineHint: '命中危险内容规则（密钥/凭据类）→ 不进注入、不进检索。放行后按普通记忆处理。',
+    quarantineReason: '规则：{reason}',
+    release: '放行',
+    blockedWhileQuarantined: '隔离中 · 放行后可常驻注入',
+    groupPending: '待放行',
+    groupOnDemand: '按需检索',
     groupInjected: '常驻注入',
+    groupCold: '冷数据·折叠（{days} 天未检索）',
     injectSwitch: '常驻注入',
-    approveFirst: '审核通过后可常驻注入',
+    approveFirst: '先放行隔离才能常驻注入',
     allNamespaces: '全部',
     nsGlobal: '全局',
     nsWorkspace: '工作区',
     noWorkspace: '未选择工作区',
     organizeMemory: '整理记忆',
-    confirmAll: '全部确认',
+    confirmAll: '全部放行',
     injectPreview: '注入预览',
     contextUsage: '上下文占用',
     keywordsLabel: '关键词',
-    suggested: '待审核',
-    approved: '已审核',
+    suggested: '隔离',
+    approved: '已生效',
     refresh: '刷新',
-    coldHint: '冷数据 · 建议按需化',
+    coldHint: '冷数据',
+    lastUsedAt: '上搜',
+    hitCount: '命中 {count} 次',
   },
   en: {
     tabMemory: 'Memory',
@@ -226,26 +234,34 @@ const STRINGS = {
     promptFilterAll: 'All',
     memorySearch: 'Search memory…',
     empty: 'No spark in the dark',
-    confirm: 'Confirm',
+    confirm: 'Release',
     forget: 'Forget',
-    groupPending: 'Pending review',
-    groupOnDemand: 'Approved · on demand',
+    groupQuarantine: 'Quarantine',
+    groupQuarantineHint: 'Flagged by a dangerous-content rule (secrets/credentials) → kept out of injection and recall. Releasing it makes it an ordinary memory.',
+    quarantineReason: 'Rule: {reason}',
+    release: 'Release',
+    blockedWhileQuarantined: 'Quarantined · release to allow injection',
+    groupPending: 'Pending release',
+    groupOnDemand: 'On demand',
     groupInjected: 'Always injected',
+    groupCold: 'Cold · collapsed ({days} days untouched)',
     injectSwitch: 'Inject every turn',
-    approveFirst: 'Approve to enable injection',
+    approveFirst: 'Release the quarantine first',
     allNamespaces: 'All',
     nsGlobal: 'Global',
     nsWorkspace: 'Workspace',
     noWorkspace: 'No workspace selected',
     organizeMemory: 'Organize memory',
-    confirmAll: 'Approve all',
+    confirmAll: 'Release all',
     injectPreview: 'Injection preview',
     contextUsage: 'Context usage',
     keywordsLabel: 'Keywords',
-    suggested: 'Suggested',
-    approved: 'Approved',
+    suggested: 'Quarantined',
+    approved: 'Active',
     refresh: 'Refresh',
-    coldHint: 'Cold · consider on-demand',
+    coldHint: 'Cold',
+    lastUsedAt: 'Recalled',
+    hitCount: '{count} hits',
   },
 } as const
 type StringKey = keyof typeof STRINGS.zh
@@ -304,7 +320,10 @@ const ssid = {
 
 // ---- /memory/api 数据通道（0.3.6，host 自建端点，panels 模式） ----
 interface MemoryApiRecord {
-  id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[], lastUsedAt?: number
+  id: string, content: string, status: 'suggested' | 'approved', injected: boolean, namespace: string, keywords: string[], lastUsedAt?: number,
+  quarantined: boolean,
+  quarantineReason?: string,
+  hitCount: number,
 }
 /** 注入预览（0.5.2）：与 memory:recall 同源渲染——真实注入行 + 预算统计。 */
 interface InjectionPreview {
@@ -325,7 +344,7 @@ async function api(method: string, payload?: Record<string, unknown>): Promise<u
 }
 
 const memoryApi = {
-  list(filter: { namespace?: string, status?: string, injected?: boolean } = {}, cwd?: string): Promise<MemoryApiRecord[]> {
+  list(filter: { namespace?: string, status?: string, injected?: boolean, quarantined?: boolean } = {}, cwd?: string): Promise<MemoryApiRecord[]> {
     return api('list', { filter, ...cwd === undefined ? {} : { cwd } }) as Promise<MemoryApiRecord[]>
   },
   reload(cwd?: string): Promise<MemoryApiRecord[]> {
@@ -361,11 +380,11 @@ const memoryApi = {
   },
 }
 
-// 预填指令（0.3.6）：过时内容用 memory_update 修正（重置待审核）；
+// 预填指令（0.3.6）：过时内容用 memory_update 修正（改动生效、注入开关保留）；
 // 判断过时的方法 = 记忆里的工具名/数量与当前实际可用工具对照。
 // 整理规则明确化（用户 2026-08-19）：同类习惯合并；与 memory:self 重复的
 // 插件介绍删除——LLM 保守默认"不合并/不删"，必须显式规则。
-const ORGANIZE_PROMPT = '请整理我的记忆库：用 memory_list 查看全部记忆。整理规则（必须执行）：①同类条目合并——工作习惯/约定类多条合并为一条（内容用 ①②③ 并列，避免碎片化）；②与「[记忆系统自述]」（你上下文中的记忆机制说明）内容重复的插件介绍条目（如 dsh-memory 插件发布信息）应删除——机制说明已由系统常驻提供，无需用户存储；③对过时、错误或已变化的内容用 memory_update 修正（会重置为待审核）；④精简冗长内容，为每条补充或修正 keywords；⑤需要删除的用 memory_forget，需要新增的用 memory_save。判断内容是否过时的方法：把记忆里提到的工具名/数量与你当前实际可用的记忆工具对照——你当前可用：memory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update（共 6 个）；若记忆中的工具列表、数量、流程与此不符即为过时，用 memory_update 修正。改动全部落在 suggested 等待审核（不要调用 memory_confirm），完成后用一句话汇报整理结果。'
+const ORGANIZE_PROMPT = '请整理我的记忆库：用 memory_list 查看全部记忆。整理规则（必须执行）：①同类条目合并——工作习惯/约定类多条合并为一条（内容用 ①②③ 并列，避免碎片化）；②与「[记忆系统自述]」（你上下文中的记忆机制说明）内容重复的插件介绍条目（如 dsh-memory 插件发布信息）应删除——机制说明已由系统常驻提供，无需用户存储；③对过时、错误或已变化的内容用 memory_update 修正（改动生效、注入开关保留）；④精简冗长内容，为每条补充或修正 keywords；⑤需要删除的用 memory_forget，需要新增的用 memory_save。判断内容是否过时的方法：把记忆里提到的工具名/数量与你当前实际可用的记忆工具对照——你当前可用：memory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update（共 6 个）；若记忆中的工具列表、数量、流程与此不符即为过时，用 memory_update 修正。改动直接生效（不要调用 memory_confirm），完成后用一句话汇报整理结果。'
 
 interface MemoryViewProps {
   visible: boolean
@@ -554,6 +573,15 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   const t = useT()
   const [mode, setMode] = useState<'mem' | 'prompt'>('mem')
   const [records, setRecords] = useState<MemoryApiRecord[]>([])
+  /**
+   * 隔离记录（2026-09-15）：引擎的 `list()` 默认整体排除隔离条目，必须显式带
+   * `filter.quarantined === true` 才取得到——所以隔离区是一次独立取数。
+   */
+  const [quarantined, setQuarantined] = useState<MemoryApiRecord[]>([])
+  // 冷组默认折叠（本地 state；面板的角色是审计台，默认视线里只留需要动手的条目）
+  const [coldOpen, setColdOpen] = useState(false)
+  // 隔离区默认展开（它是安全网：有内容就该被看见）
+  const [quarantineOpen, setQuarantineOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [namespace, setNamespace] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -577,12 +605,19 @@ function MemoryView(props: MemoryViewProps): ReactNode {
     } catch {
       // 失败保留旧列表（2026-08-19 用户实测：失败清空无后续）
     }
+    try {
+      // 隔离区单独取数（缺省列表不含隔离记录，见 state 上的说明）
+      setQuarantined(await memoryApi.list({ quarantined: true }, props.cwd))
+    } catch {
+      // 失败保留旧列表
+    }
   }
   // 强制重读存储文件（JsonStorageBackend 无 watch——外部编辑后必须 reload）
   const refreshFromDisk = async (): Promise<void> => {
     setRefreshing(true)
     try {
       setRecords(await memoryApi.reload(props.cwd))
+      setQuarantined(await memoryApi.list({ quarantined: true }, props.cwd))
     } catch {
       await reload()
     } finally {
@@ -592,7 +627,8 @@ function MemoryView(props: MemoryViewProps): ReactNode {
   useEffect(() => { if (props.visible) void reload() }, [props.visible])
 
   const toggleInjected = async (record: MemoryApiRecord): Promise<void> => {
-    if (record.status !== 'approved') return
+    // 隔离记录在引擎侧被拒绝开注入（setInjected 抛错）——这里先挡住，不做无效请求
+    if (record.status !== 'approved' || record.quarantined) return
     try {
       await memoryApi.setInjected(record.id, !record.injected, props.cwd)
     } catch {
@@ -601,8 +637,19 @@ function MemoryView(props: MemoryViewProps): ReactNode {
     await reload()
   }
 
+  /** 放行隔离记录 = 解除隔离并转 approved（引擎 setStatus 的语义）。 */
+  const release = async (record: MemoryApiRecord): Promise<void> => {
+    try {
+      await memoryApi.confirm(record.id, props.cwd)
+    } catch {
+      /* 失败保持隔离 */
+    }
+    await reload()
+  }
+
+  /** 「全部放行」只针对待放行的非隔离条目：隔离条目必须逐条看过规则再放。 */
   const confirmAll = async (): Promise<void> => {
-    const pending = records.filter(record => record.status === 'suggested')
+    const pending = records.filter(record => record.status === 'suggested' && !record.quarantined)
     if (pending.length === 0) return
     await Promise.all(pending.map(record => memoryApi.confirm(record.id, props.cwd).catch(() => null)))
     await reload()
@@ -655,16 +702,171 @@ function MemoryView(props: MemoryViewProps): ReactNode {
     : namespace === 'workspace' ? records.filter(record => record.namespace === 'project')
       : records.filter(record => record.namespace === 'global')
   const filtered = byNs.filter(record => q === '' || record.content.toLowerCase().includes(q))
+  /** 隔离区：独立通道取回的记录，套用与主列表相同的命名空间/搜索过滤。 */
+  const quarantinedScoped = (namespace === null ? quarantined
+    : namespace === 'workspace' ? quarantined.filter(record => record.namespace === 'project')
+      : quarantined.filter(record => record.namespace === 'global'))
+    .filter(record => q === '' || record.content.toLowerCase().includes(q))
   const nsCounts = {
-    all: records.length,
-    global: records.filter(record => record.namespace === 'global').length,
-    workspace: records.filter(record => record.namespace === 'project').length,
+    all: records.length + quarantined.length,
+    global: records.filter(record => record.namespace === 'global').length + quarantined.filter(record => record.namespace === 'global').length,
+    workspace: records.filter(record => record.namespace === 'project').length + quarantined.filter(record => record.namespace === 'project').length,
   }
+  /**
+   * 分组（2026-09-15 审计台）：隔离区 → 待放行 → 常驻注入 → 按需检索 → 冷数据。
+   * 冷数据判定用 `isCold(lastUsedAt)`（引擎自动降级用同一个 30 天阈值），且只作用于
+   * **已定型的条目**（已生效/常驻）——待放行与隔离区是待决策队列，不该被沉底。
+   */
+  const coldNow = Date.now()
+  const settled = (excludeCold: boolean): MemoryApiRecord[] => (excludeCold
+    ? filtered.filter(record => !isCold(record.lastUsedAt, coldNow))
+    : filtered)
   const groups: Array<{ key: string, label: string, items: typeof filtered }> = [
-    { key: 'pending', label: t('groupPending'), items: filtered.filter(record => record.status === 'suggested') },
-    { key: 'ondemand', label: t('groupOnDemand'), items: filtered.filter(record => record.status === 'approved' && !record.injected) },
-    { key: 'injected', label: t('groupInjected'), items: filtered.filter(record => record.status === 'approved' && record.injected) },
+    { key: 'pending', label: t('groupPending'), items: settled(false).filter(record => record.status === 'suggested') },
+    { key: 'injected', label: t('groupInjected'), items: settled(true).filter(record => record.status === 'approved' && record.injected) },
+    { key: 'ondemand', label: t('groupOnDemand'), items: settled(true).filter(record => record.status === 'approved' && !record.injected) },
   ].filter(group => group.items.length > 0)
+  const coldItems = settled(false).filter(record => record.status === 'approved' && isCold(record.lastUsedAt, coldNow))
+
+  // ── 记忆卡片（分组共用）──
+  /** 一条记忆的卡片：内容 + keywords + 状态行 + 动作（钉住 / 放行 / 删除）。 */
+  const memoryCard = (record: MemoryApiRecord, options: { quarantined?: boolean } = {}): ReactNode => {
+    const isQuarantined = options.quarantined === true || record.quarantined
+    // 隔离或未生效 = 引擎侧会拒绝开注入（要么抛错，要么根本进不了注入）
+    const injectable = record.status === 'approved' && !isQuarantined
+    return createElement('div', {
+      key: record.id,
+      style: {
+        ...ssid.card,
+        // 隔离区显眼但不吓人：左边一条警示色，不换底色（安全网，不是错误）
+        ...isQuarantined ? { borderLeft: '3px solid var(--dsw-alias-state-warning-primary, #f7c94f)' } : {},
+      },
+    },
+      createElement('div', { style: ssid.text }, ContentWithRefs({ text: record.content })),
+      // 隔离原因：命中的规则名（安全网，只陈述事实，不做道德评判）
+      isQuarantined
+        ? createElement('div', { style: { ...ssid.muted, marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' } },
+          createElement('span', {
+            style: {
+              fontSize: 10, padding: '1px 7px', borderRadius: 8, fontWeight: 600,
+              background: 'var(--dsw-alias-state-warning-tertiary, rgba(247,201,79,.16))',
+              color: 'var(--dsw-alias-state-warning-primary, #f7c94f)',
+            },
+          }, t('groupQuarantine')),
+          createElement('span', null, record.quarantineReason === undefined || record.quarantineReason === ''
+            ? t('quarantineReason', { reason: '—' })
+            : t('quarantineReason', { reason: record.quarantineReason })),
+        )
+        : null,
+      // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
+      record.keywords !== undefined && record.keywords.length > 0
+        ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 } },
+          record.keywords.map(keyword => createElement('span', {
+            key: keyword,
+            style: {
+              fontSize: 10, padding: '1px 7px', borderRadius: 8,
+              background: 'var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))',
+              color: 'var(--dsw-alias-label-secondary, #67748a)',
+            },
+          }, keyword)))
+        : null,
+      createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
+        `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}`
+        + `${record.injected ? ` · ${t('groupInjected')}` : ''}`
+        + `${record.lastUsedAt !== undefined ? ` · ${t('lastUsedAt')} ${fmtDate(record.lastUsedAt)}` : ''}`
+        + `${isCold(record.lastUsedAt, coldNow) ? ` · ${t('coldHint')}` : ''}`
+        + `${record.hitCount > 0 ? ` · ${t('hitCount', { count: record.hitCount })}` : ''}`),
+      createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },
+        createElement('button', {
+          type: 'button',
+          title: isQuarantined ? t('blockedWhileQuarantined') : record.status === 'approved' ? t('injectSwitch') : t('approveFirst'),
+          disabled: !injectable,
+          onClick: () => { void toggleInjected(record) },
+          style: {
+            ...ssid.btn,
+            ...(record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {}),
+            opacity: injectable ? 1 : 0.4,
+            cursor: injectable ? 'pointer' : 'not-allowed',
+          },
+        }, record.injected ? `✓ ${t('injectSwitch')}` : t('injectSwitch')),
+        isQuarantined
+          ? createElement('button', {
+            style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent },
+            onClick: () => { void release(record) },
+          }, t('release'))
+          : null,
+        record.status === 'suggested' && !isQuarantined
+          ? createElement('button', {
+            style: ssid.btn,
+            onClick: () => { void memoryApi.confirm(record.id, props.cwd).then(() => reload()) },
+          }, t('confirm'))
+          : null,
+        createElement('button', {
+          style: ssid.btn,
+          onClick: () => { void memoryApi.forget(record.id, props.cwd).then(() => reload()) },
+        }, t('forget')),
+      ),
+    )
+  }
+  /** 折叠分组的标题行：整行可点（冷组默认折叠，点开才看得到内容）。 */
+  const foldHeader = (label: string, count: number, open: boolean, toggle: () => void): ReactNode =>
+    createElement('div', {
+      style: { ...ssid.title, cursor: 'pointer', marginBottom: 0 },
+      onClick: toggle,
+      onKeyDown: (event: { key?: string }) => {
+        if (event.key === 'Enter' || event.key === ' ') toggle()
+      },
+      role: 'button',
+      tabIndex: 0,
+    },
+      createElement('span', null, `${open ? '▾' : '▸'} ${label}`),
+      createElement('span', { style: ssid.count }, String(count)),
+    )
+
+  // 折叠分组（隔离区 / 冷组）与三个固定分组的渲染（列表顺序即处置顺序）
+  const quarantineSection: ReactNode = quarantinedScoped.length === 0 ? null
+    : createElement('div', { key: 'quarantine', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+      foldHeader(t('groupQuarantine'), quarantinedScoped.length, quarantineOpen, () => { setQuarantineOpen(open => !open) }),
+      createElement('div', { style: { ...ssid.muted, fontSize: 10.5 } }, t('groupQuarantineHint')),
+      quarantineOpen
+        ? createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          quarantinedScoped.map(record => memoryCard(record, { quarantined: true })))
+        : null,
+    )
+  const coldSection: ReactNode = coldItems.length === 0 ? null
+    : createElement('div', { key: 'cold', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+      foldHeader(t('groupCold', { days: COLD_DAYS }), coldItems.length, coldOpen, () => { setColdOpen(open => !open) }),
+      coldOpen
+        ? createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          coldItems.map(record => memoryCard(record)))
+        : null,
+    )
+  const groupSections = groups.map(group => createElement('div', {
+    key: group.key, style: { display: 'flex', flexDirection: 'column', gap: 6 },
+  },
+    createElement('div', { style: ssid.title },
+      createElement('span', null, group.label),
+      createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+        group.key === 'pending' && group.items.length > 0
+          ? createElement('button', {
+            type: 'button',
+            title: t('confirmAll'),
+            onClick: () => { void confirmAll() },
+            style: { ...ssid.btn, padding: '1px 8px', fontSize: 10.5 },
+          }, t('confirmAll'))
+          : null,
+        createElement('span', { style: ssid.count }, String(group.items.length)),
+      ),
+    ),
+    group.items.map(record => memoryCard(record)),
+  ))
+  const listSection: ReactNode = quarantineSection === null && groupSections.length === 0 && coldSection === null
+    ? createElement('div', { key: 'empty', style: ssid.empty }, t('empty'))
+    : createElement('div', { key: 'groups', style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+      quarantineSection,
+      groupSections,
+      coldSection,
+    )
 
   // ── 记忆 / 模板 切换（0.6.0）──
   const modeTabs = createElement('div', { style: { display: 'flex', gap: 4 } },
@@ -756,65 +958,7 @@ function MemoryView(props: MemoryViewProps): ReactNode {
       // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
       namespace === 'workspace' && (props.cwd === undefined || props.cwd === '')
         ? createElement('div', { style: ssid.empty }, t('noWorkspace'))
-        : groups.length === 0
-          ? createElement('div', { style: ssid.empty }, t('empty'))
-          : groups.map(group => createElement('div', { key: group.key, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-            createElement('div', { style: ssid.title },
-              createElement('span', null, group.label),
-              createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-                group.key === 'pending' && group.items.length > 0
-                  ? createElement('button', {
-                    type: 'button',
-                    title: t('confirmAll'),
-                    onClick: () => { void confirmAll() },
-                    style: { ...ssid.btn, padding: '1px 8px', fontSize: 10.5 },
-                  }, t('confirmAll'))
-                  : null,
-                createElement('span', { style: ssid.count }, String(group.items.length)),
-              ),
-            ),
-            group.items.map(record => createElement('div', { key: record.id, style: ssid.card },
-              createElement('div', { style: ssid.text }, ContentWithRefs({ text: record.content })),
-              // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
-              record.keywords !== undefined && record.keywords.length > 0
-                ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 } },
-                  record.keywords.map(keyword => createElement('span', {
-                    key: keyword,
-                    style: {
-                      fontSize: 10, padding: '1px 7px', borderRadius: 8,
-                      background: 'var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))',
-                      color: 'var(--dsw-alias-label-secondary, #67748a)',
-                    },
-                  }, keyword)))
-                : null,
-              createElement('div', { style: { ...ssid.muted, marginTop: 6 } },
-                `${record.namespace} · ${record.status === 'approved' ? t('approved') : t('suggested')}${record.injected ? ` · ${t('groupInjected')}` : ''}${record.lastUsedAt !== undefined ? ` · 上搜 ${fmtDate(record.lastUsedAt)}` : ''}${isCold(record.lastUsedAt) ? ` · ${t('coldHint')}` : ''}`),
-              createElement('div', { style: { display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' } },
-                createElement('button', {
-                  type: 'button',
-                  title: record.status === 'approved' ? t('injectSwitch') : t('approveFirst'),
-                  disabled: record.status !== 'approved',
-                  onClick: () => { void toggleInjected(record) },
-                  style: {
-                    ...ssid.btn,
-                    ...(record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {}),
-                    opacity: record.status !== 'approved' ? 0.4 : 1,
-                    cursor: record.status !== 'approved' ? 'not-allowed' : 'pointer',
-                  },
-                }, record.injected ? `✓ ${t('injectSwitch')}` : t('injectSwitch')),
-                record.status === 'suggested'
-                  ? createElement('button', {
-                    style: ssid.btn,
-                    onClick: () => { void memoryApi.confirm(record.id, props.cwd).then(() => reload()) },
-                  }, t('confirm'))
-                  : null,
-                createElement('button', {
-                  style: ssid.btn,
-                  onClick: () => { void memoryApi.forget(record.id, props.cwd).then(() => reload()) },
-                }, t('forget')),
-              ),
-            )),
-          )),
+        : listSection,
     ),
   )
 }

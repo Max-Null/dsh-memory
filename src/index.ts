@@ -43,6 +43,14 @@ interface MemoryToolRecord {
   createdAt: number
   updatedAt: number
   lastUsedAt?: number
+  /** 锚点已失效（2026-09-15）：内容可能已过时，据此行动前先核对现状。 */
+  stale?: boolean
+  /** 失效原因（锚点名 + 声明值 vs 当前值）。 */
+  staleReason?: string
+  /** 命中次数（淘汰机制的输入）。 */
+  hitCount?: number
+  /** 已隔离：不进注入、不进检索（此字段一般只在显式过滤时才出现）。 */
+  quarantined?: boolean
 }
 
 interface MemoryToolHit {
@@ -63,6 +71,10 @@ const RECORD_SCHEMA = {
     createdAt: { type: 'number', required: true },
     updatedAt: { type: 'number', required: true },
     lastUsedAt: { type: 'number' },
+    stale: { type: 'boolean', description: '内容可能已过时（锚点失效）：据此行动前先核对现状，核对后用 memory_update 修正或刷新。' },
+    staleReason: { type: 'string' },
+    hitCount: { type: 'number' },
+    quarantined: { type: 'boolean' },
   },
 } as const
 
@@ -102,6 +114,10 @@ function recordValue(record: MemoryRecord): MemoryToolRecord {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     ...record.lastUsedAt === undefined ? {} : { lastUsedAt: record.lastUsedAt },
+    ...record.stale === undefined ? {} : { stale: record.stale },
+    ...record.staleReason === undefined ? {} : { staleReason: record.staleReason },
+    hitCount: record.hitCount,
+    ...record.quarantined === true ? { quarantined: true } : {},
   }
 }
 
@@ -140,13 +156,15 @@ function promptValue(record: MemoryRecord): PromptToolRecord {
 const GUIDANCE =
   'Use memory tools for cross-session preferences, habits, and project conventions. '
   + '记忆工具用于跨会话的偏好、习惯与项目约定。'
-  + 'memory_save always records a suggestion (`suggested`) and never makes it effective itself — '
-  + 'a human approves it. memory_save 永远只写入建议（`suggested`），不会自行生效——需人工审核通过。'
+  + 'memory_save writes a memory that takes effect immediately (`approved`) — memories are maintained '
+  + 'by the system and the model, and humans intervene only as exceptions. Credential-like content is '
+  + 'quarantined instead. memory_save 写入即生效（`approved`）——记忆由系统与模型自行维护，人工只在例外时介入；'
+  + '命中危险内容规则（密钥/凭据）的写入会被隔离。'
   + 'Approval only marks the content reviewed; whether it is injected every turn is a separate '
   + 'human-controlled switch (`injected`). 审核通过只代表内容被认可；是否每轮常驻注入由独立的'
   + '人工开关（`injected`）控制。'
   + 'When earlier context may be relevant, call memory_search to recall it — reviewable memories '
-  + '(`suggested`) are searchable too. 相关历史上下文可用 memory_search 检索——待审核的记忆也可检索。'
+  + '相关历史上下文可用 memory_search 检索；被隔离的记录不进检索。'
   + 'Every memory is plaintext and inspectable with memory_list; memory_forget removes one. '
   + '所有记忆均为明文，可用 memory_list 查看；memory_forget 删除一条。'
   + 'Approved + injected memories of the CURRENT session workspace are every-turn injected too. '
@@ -235,11 +253,21 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_save',
-    description: 'Record one cross-session memory as a suggestion. It never becomes effective until a human confirms it; the model must not present a suggestion as confirmed.',
+    description: 'Save one cross-session memory. It takes effect immediately; credential-like content is quarantined instead. Record durable preferences, corrections and reusable conclusions — not transient state, guesses, or facts readable from the repo (record where to look instead). 保存一条跨会话记忆：写入即生效；命中密钥/凭据规则的写入会被隔离。只记长期偏好、纠正与可复用结论——不记临时状态、推测、或能从仓库读到的事实（那类记「去哪查」）。',
     parameters: {
       content: { type: 'string', required: true, description: 'Plaintext memory content.' },
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Where it applies; defaults to global.' },
-      keywords: { type: 'array', items: { type: 'string' }, description: 'Explicit searchable anchors for memory_search.' },
+      keywords: { type: 'array', items: { type: 'string' }, description: 'Explicit searchable anchors for memory_search. Give several angles (synonyms, abbreviations, zh/en) or it will not be found later. 多角度关键词（同义词、缩写、中英），否则将来检索不到它。' },
+      anchor: {
+        type: 'object',
+        additionalProperties: false,
+        description: 'Optional validity anchor: bind this memory to a probeable environment value so it auto-expires when that value changes. Use only for facts that depend on the environment (tool behaviour under a specific version, config decided by an env var). 可选锚点：把记忆绑到可探测的环境值，值变了自动失效。只用于「随环境变化的事实」。',
+        properties: {
+          kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version'], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version.' },
+          name: { type: 'string', description: 'For kind=env: the variable name.' },
+          value: { type: 'string', required: true, description: 'The value probed at write time.' },
+        },
+      },
     },
     output: {
       schema: RECORD_SCHEMA,
@@ -250,6 +278,10 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         content: args.content,
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
+        // 参数已由 tool schema 校验，这里的窄化只为过类型
+        ...args.anchor === undefined
+          ? {}
+          : { anchor: args.anchor as { kind: 'env' | 'tool-list' | 'self-version', name?: string, value: string } },
       }, execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Save memory', 'other', args.content),
@@ -279,7 +311,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_search',
-    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. 按关键词检索记忆（中文 2-gram + 关键词加权；配置嵌入时含语义融合；含待审核条目）。',
+    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. 按关键词检索记忆（中文 2-gram + 关键词加权；配置嵌入时含语义融合；含待审核条目，被隔离的除外）。',
     parameters: {
       query: { type: 'string', required: true, description: 'Keyword query. 关键词查询.' },
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
@@ -445,7 +477,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_update',
-    description: 'Update the content or keywords of one stored memory (e.g. correcting stale facts). The record is re-marked `suggested` — the human must review it again before it is approved/injected again. 修改一条记忆的内容或关键词（如修正过时信息）。改动后该记忆重置为待审核（suggested），需人工再次审核；常驻注入开关保留原值（审核通过后恢复）。',
+    description: 'Update the content or keywords of one stored memory (e.g. correcting stale facts). The record keeps its review status and injection switch; content that looks like a credential quarantines it instead. 修改一条记忆的内容或关键词（如修正过时信息）。改动后记忆保持原有审核状态与注入开关；若新内容命中危险规则则转为隔离。',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
       content: { type: 'string', description: 'New content; omit to keep current. 新内容；省略则保留现有内容.' },
@@ -466,7 +498,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_confirm',
-    description: 'Approve a suggested memory so it is marked human-reviewed (`approved`). Approval does NOT enable persistent injection — whether a memory is injected every turn is a separate human-controlled switch (`injected`). Only call this when the human explicitly asks to approve a memory; never self-promote a suggestion. 将待审核记忆标记为已审核（approved）。审核通过不改变注入状态——是否每轮常驻注入由独立的人工开关（injected）控制。仅在用户明确要求审核某条记忆时调用；模型不得自我提升。',
+    description: 'Release a quarantined memory: marks it human-reviewed (`approved`) and clears its quarantine. Under the silent mechanism ordinary writes already take effect by themselves, so call this only when the human explicitly asks to release a quarantined memory. 放行一条被隔离的记忆：标记为已审核并解除隔离。静默机制下普通写入已自行生效，因此仅在用户明确要求放行隔离记忆时调用。',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
     },

@@ -175,26 +175,34 @@ var STRINGS = {
     promptFilterAll: "\u5168\u90E8",
     memorySearch: "\u641C\u7D22\u8BB0\u5FC6\u2026",
     empty: "\u9ED1\u6697\u4E2D\u672A\u89C1\u7075\u5149",
-    confirm: "\u786E\u8BA4",
+    confirm: "\u653E\u884C",
     forget: "\u5220\u9664",
-    groupPending: "\u5F85\u5BA1\u6838",
-    groupOnDemand: "\u5DF2\u5BA1\u6838 \xB7 \u6309\u9700",
+    groupQuarantine: "\u9694\u79BB\u533A",
+    groupQuarantineHint: "\u547D\u4E2D\u5371\u9669\u5185\u5BB9\u89C4\u5219\uFF08\u5BC6\u94A5/\u51ED\u636E\u7C7B\uFF09\u2192 \u4E0D\u8FDB\u6CE8\u5165\u3001\u4E0D\u8FDB\u68C0\u7D22\u3002\u653E\u884C\u540E\u6309\u666E\u901A\u8BB0\u5FC6\u5904\u7406\u3002",
+    quarantineReason: "\u89C4\u5219\uFF1A{reason}",
+    release: "\u653E\u884C",
+    blockedWhileQuarantined: "\u9694\u79BB\u4E2D \xB7 \u653E\u884C\u540E\u53EF\u5E38\u9A7B\u6CE8\u5165",
+    groupPending: "\u5F85\u653E\u884C",
+    groupOnDemand: "\u6309\u9700\u68C0\u7D22",
     groupInjected: "\u5E38\u9A7B\u6CE8\u5165",
+    groupCold: "\u51B7\u6570\u636E\xB7\u6298\u53E0\uFF08{days} \u5929\u672A\u68C0\u7D22\uFF09",
     injectSwitch: "\u5E38\u9A7B\u6CE8\u5165",
-    approveFirst: "\u5BA1\u6838\u901A\u8FC7\u540E\u53EF\u5E38\u9A7B\u6CE8\u5165",
+    approveFirst: "\u5148\u653E\u884C\u9694\u79BB\u624D\u80FD\u5E38\u9A7B\u6CE8\u5165",
     allNamespaces: "\u5168\u90E8",
     nsGlobal: "\u5168\u5C40",
     nsWorkspace: "\u5DE5\u4F5C\u533A",
     noWorkspace: "\u672A\u9009\u62E9\u5DE5\u4F5C\u533A",
     organizeMemory: "\u6574\u7406\u8BB0\u5FC6",
-    confirmAll: "\u5168\u90E8\u786E\u8BA4",
+    confirmAll: "\u5168\u90E8\u653E\u884C",
     injectPreview: "\u6CE8\u5165\u9884\u89C8",
     contextUsage: "\u4E0A\u4E0B\u6587\u5360\u7528",
     keywordsLabel: "\u5173\u952E\u8BCD",
-    suggested: "\u5F85\u5BA1\u6838",
-    approved: "\u5DF2\u5BA1\u6838",
+    suggested: "\u9694\u79BB",
+    approved: "\u5DF2\u751F\u6548",
     refresh: "\u5237\u65B0",
-    coldHint: "\u51B7\u6570\u636E \xB7 \u5EFA\u8BAE\u6309\u9700\u5316"
+    coldHint: "\u51B7\u6570\u636E",
+    lastUsedAt: "\u4E0A\u641C",
+    hitCount: "\u547D\u4E2D {count} \u6B21"
   },
   en: {
     tabMemory: "Memory",
@@ -220,26 +228,34 @@ var STRINGS = {
     promptFilterAll: "All",
     memorySearch: "Search memory\u2026",
     empty: "No spark in the dark",
-    confirm: "Confirm",
+    confirm: "Release",
     forget: "Forget",
-    groupPending: "Pending review",
-    groupOnDemand: "Approved \xB7 on demand",
+    groupQuarantine: "Quarantine",
+    groupQuarantineHint: "Flagged by a dangerous-content rule (secrets/credentials) \u2192 kept out of injection and recall. Releasing it makes it an ordinary memory.",
+    quarantineReason: "Rule: {reason}",
+    release: "Release",
+    blockedWhileQuarantined: "Quarantined \xB7 release to allow injection",
+    groupPending: "Pending release",
+    groupOnDemand: "On demand",
     groupInjected: "Always injected",
+    groupCold: "Cold \xB7 collapsed ({days} days untouched)",
     injectSwitch: "Inject every turn",
-    approveFirst: "Approve to enable injection",
+    approveFirst: "Release the quarantine first",
     allNamespaces: "All",
     nsGlobal: "Global",
     nsWorkspace: "Workspace",
     noWorkspace: "No workspace selected",
     organizeMemory: "Organize memory",
-    confirmAll: "Approve all",
+    confirmAll: "Release all",
     injectPreview: "Injection preview",
     contextUsage: "Context usage",
     keywordsLabel: "Keywords",
-    suggested: "Suggested",
-    approved: "Approved",
+    suggested: "Quarantined",
+    approved: "Active",
     refresh: "Refresh",
-    coldHint: "Cold \xB7 consider on-demand"
+    coldHint: "Cold",
+    lastUsedAt: "Recalled",
+    hitCount: "{count} hits"
   }
 };
 var localeId = "zh";
@@ -356,7 +372,7 @@ var memoryApi = {
     return api("prompt.refresh", { ...cwd === void 0 ? {} : { cwd } });
   }
 };
-var ORGANIZE_PROMPT = "\u8BF7\u6574\u7406\u6211\u7684\u8BB0\u5FC6\u5E93\uFF1A\u7528 memory_list \u67E5\u770B\u5168\u90E8\u8BB0\u5FC6\u3002\u6574\u7406\u89C4\u5219\uFF08\u5FC5\u987B\u6267\u884C\uFF09\uFF1A\u2460\u540C\u7C7B\u6761\u76EE\u5408\u5E76\u2014\u2014\u5DE5\u4F5C\u4E60\u60EF/\u7EA6\u5B9A\u7C7B\u591A\u6761\u5408\u5E76\u4E3A\u4E00\u6761\uFF08\u5185\u5BB9\u7528 \u2460\u2461\u2462 \u5E76\u5217\uFF0C\u907F\u514D\u788E\u7247\u5316\uFF09\uFF1B\u2461\u4E0E\u300C[\u8BB0\u5FC6\u7CFB\u7EDF\u81EA\u8FF0]\u300D\uFF08\u4F60\u4E0A\u4E0B\u6587\u4E2D\u7684\u8BB0\u5FC6\u673A\u5236\u8BF4\u660E\uFF09\u5185\u5BB9\u91CD\u590D\u7684\u63D2\u4EF6\u4ECB\u7ECD\u6761\u76EE\uFF08\u5982 dsh-memory \u63D2\u4EF6\u53D1\u5E03\u4FE1\u606F\uFF09\u5E94\u5220\u9664\u2014\u2014\u673A\u5236\u8BF4\u660E\u5DF2\u7531\u7CFB\u7EDF\u5E38\u9A7B\u63D0\u4F9B\uFF0C\u65E0\u9700\u7528\u6237\u5B58\u50A8\uFF1B\u2462\u5BF9\u8FC7\u65F6\u3001\u9519\u8BEF\u6216\u5DF2\u53D8\u5316\u7684\u5185\u5BB9\u7528 memory_update \u4FEE\u6B63\uFF08\u4F1A\u91CD\u7F6E\u4E3A\u5F85\u5BA1\u6838\uFF09\uFF1B\u2463\u7CBE\u7B80\u5197\u957F\u5185\u5BB9\uFF0C\u4E3A\u6BCF\u6761\u8865\u5145\u6216\u4FEE\u6B63 keywords\uFF1B\u2464\u9700\u8981\u5220\u9664\u7684\u7528 memory_forget\uFF0C\u9700\u8981\u65B0\u589E\u7684\u7528 memory_save\u3002\u5224\u65AD\u5185\u5BB9\u662F\u5426\u8FC7\u65F6\u7684\u65B9\u6CD5\uFF1A\u628A\u8BB0\u5FC6\u91CC\u63D0\u5230\u7684\u5DE5\u5177\u540D/\u6570\u91CF\u4E0E\u4F60\u5F53\u524D\u5B9E\u9645\u53EF\u7528\u7684\u8BB0\u5FC6\u5DE5\u5177\u5BF9\u7167\u2014\u2014\u4F60\u5F53\u524D\u53EF\u7528\uFF1Amemory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update\uFF08\u5171 6 \u4E2A\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u4E2D\u7684\u5DE5\u5177\u5217\u8868\u3001\u6570\u91CF\u3001\u6D41\u7A0B\u4E0E\u6B64\u4E0D\u7B26\u5373\u4E3A\u8FC7\u65F6\uFF0C\u7528 memory_update \u4FEE\u6B63\u3002\u6539\u52A8\u5168\u90E8\u843D\u5728 suggested \u7B49\u5F85\u5BA1\u6838\uFF08\u4E0D\u8981\u8C03\u7528 memory_confirm\uFF09\uFF0C\u5B8C\u6210\u540E\u7528\u4E00\u53E5\u8BDD\u6C47\u62A5\u6574\u7406\u7ED3\u679C\u3002";
+var ORGANIZE_PROMPT = "\u8BF7\u6574\u7406\u6211\u7684\u8BB0\u5FC6\u5E93\uFF1A\u7528 memory_list \u67E5\u770B\u5168\u90E8\u8BB0\u5FC6\u3002\u6574\u7406\u89C4\u5219\uFF08\u5FC5\u987B\u6267\u884C\uFF09\uFF1A\u2460\u540C\u7C7B\u6761\u76EE\u5408\u5E76\u2014\u2014\u5DE5\u4F5C\u4E60\u60EF/\u7EA6\u5B9A\u7C7B\u591A\u6761\u5408\u5E76\u4E3A\u4E00\u6761\uFF08\u5185\u5BB9\u7528 \u2460\u2461\u2462 \u5E76\u5217\uFF0C\u907F\u514D\u788E\u7247\u5316\uFF09\uFF1B\u2461\u4E0E\u300C[\u8BB0\u5FC6\u7CFB\u7EDF\u81EA\u8FF0]\u300D\uFF08\u4F60\u4E0A\u4E0B\u6587\u4E2D\u7684\u8BB0\u5FC6\u673A\u5236\u8BF4\u660E\uFF09\u5185\u5BB9\u91CD\u590D\u7684\u63D2\u4EF6\u4ECB\u7ECD\u6761\u76EE\uFF08\u5982 dsh-memory \u63D2\u4EF6\u53D1\u5E03\u4FE1\u606F\uFF09\u5E94\u5220\u9664\u2014\u2014\u673A\u5236\u8BF4\u660E\u5DF2\u7531\u7CFB\u7EDF\u5E38\u9A7B\u63D0\u4F9B\uFF0C\u65E0\u9700\u7528\u6237\u5B58\u50A8\uFF1B\u2462\u5BF9\u8FC7\u65F6\u3001\u9519\u8BEF\u6216\u5DF2\u53D8\u5316\u7684\u5185\u5BB9\u7528 memory_update \u4FEE\u6B63\uFF08\u6539\u52A8\u751F\u6548\u3001\u6CE8\u5165\u5F00\u5173\u4FDD\u7559\uFF09\uFF1B\u2463\u7CBE\u7B80\u5197\u957F\u5185\u5BB9\uFF0C\u4E3A\u6BCF\u6761\u8865\u5145\u6216\u4FEE\u6B63 keywords\uFF1B\u2464\u9700\u8981\u5220\u9664\u7684\u7528 memory_forget\uFF0C\u9700\u8981\u65B0\u589E\u7684\u7528 memory_save\u3002\u5224\u65AD\u5185\u5BB9\u662F\u5426\u8FC7\u65F6\u7684\u65B9\u6CD5\uFF1A\u628A\u8BB0\u5FC6\u91CC\u63D0\u5230\u7684\u5DE5\u5177\u540D/\u6570\u91CF\u4E0E\u4F60\u5F53\u524D\u5B9E\u9645\u53EF\u7528\u7684\u8BB0\u5FC6\u5DE5\u5177\u5BF9\u7167\u2014\u2014\u4F60\u5F53\u524D\u53EF\u7528\uFF1Amemory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update\uFF08\u5171 6 \u4E2A\uFF09\uFF1B\u82E5\u8BB0\u5FC6\u4E2D\u7684\u5DE5\u5177\u5217\u8868\u3001\u6570\u91CF\u3001\u6D41\u7A0B\u4E0E\u6B64\u4E0D\u7B26\u5373\u4E3A\u8FC7\u65F6\uFF0C\u7528 memory_update \u4FEE\u6B63\u3002\u6539\u52A8\u76F4\u63A5\u751F\u6548\uFF08\u4E0D\u8981\u8C03\u7528 memory_confirm\uFF09\uFF0C\u5B8C\u6210\u540E\u7528\u4E00\u53E5\u8BDD\u6C47\u62A5\u6574\u7406\u7ED3\u679C\u3002";
 function insertIntoInput(ctx, text) {
   const sessions = ctx.get?.("sessions");
   const conversation = ctx.get?.("conversation");
@@ -585,6 +601,9 @@ function MemoryView(props) {
   const t = useT();
   const [mode, setMode] = (0, import_react.useState)("mem");
   const [records, setRecords] = (0, import_react.useState)([]);
+  const [quarantined, setQuarantined] = (0, import_react.useState)([]);
+  const [coldOpen, setColdOpen] = (0, import_react.useState)(false);
+  const [quarantineOpen, setQuarantineOpen] = (0, import_react.useState)(true);
   const [query, setQuery] = (0, import_react.useState)("");
   const [namespace, setNamespace] = (0, import_react.useState)(null);
   const [refreshing, setRefreshing] = (0, import_react.useState)(false);
@@ -608,11 +627,16 @@ function MemoryView(props) {
       setRecords(await memoryApi.list({}, props.cwd));
     } catch {
     }
+    try {
+      setQuarantined(await memoryApi.list({ quarantined: true }, props.cwd));
+    } catch {
+    }
   };
   const refreshFromDisk = async () => {
     setRefreshing(true);
     try {
       setRecords(await memoryApi.reload(props.cwd));
+      setQuarantined(await memoryApi.list({ quarantined: true }, props.cwd));
     } catch {
       await reload();
     } finally {
@@ -623,15 +647,22 @@ function MemoryView(props) {
     if (props.visible) void reload();
   }, [props.visible]);
   const toggleInjected = async (record) => {
-    if (record.status !== "approved") return;
+    if (record.status !== "approved" || record.quarantined) return;
     try {
       await memoryApi.setInjected(record.id, !record.injected, props.cwd);
     } catch {
     }
     await reload();
   };
+  const release = async (record) => {
+    try {
+      await memoryApi.confirm(record.id, props.cwd);
+    } catch {
+    }
+    await reload();
+  };
   const confirmAll = async () => {
-    const pending = records.filter((record) => record.status === "suggested");
+    const pending = records.filter((record) => record.status === "suggested" && !record.quarantined);
     if (pending.length === 0) return;
     await Promise.all(pending.map((record) => memoryApi.confirm(record.id, props.cwd).catch(() => null)));
     await reload();
@@ -671,16 +702,180 @@ function MemoryView(props) {
   const q = query.trim().toLowerCase();
   const byNs = namespace === null ? records : namespace === "workspace" ? records.filter((record) => record.namespace === "project") : records.filter((record) => record.namespace === "global");
   const filtered = byNs.filter((record) => q === "" || record.content.toLowerCase().includes(q));
+  const quarantinedScoped = (namespace === null ? quarantined : namespace === "workspace" ? quarantined.filter((record) => record.namespace === "project") : quarantined.filter((record) => record.namespace === "global")).filter((record) => q === "" || record.content.toLowerCase().includes(q));
   const nsCounts = {
-    all: records.length,
-    global: records.filter((record) => record.namespace === "global").length,
-    workspace: records.filter((record) => record.namespace === "project").length
+    all: records.length + quarantined.length,
+    global: records.filter((record) => record.namespace === "global").length + quarantined.filter((record) => record.namespace === "global").length,
+    workspace: records.filter((record) => record.namespace === "project").length + quarantined.filter((record) => record.namespace === "project").length
   };
+  const coldNow = Date.now();
+  const settled = (excludeCold) => excludeCold ? filtered.filter((record) => !isCold(record.lastUsedAt, coldNow)) : filtered;
   const groups = [
-    { key: "pending", label: t("groupPending"), items: filtered.filter((record) => record.status === "suggested") },
-    { key: "ondemand", label: t("groupOnDemand"), items: filtered.filter((record) => record.status === "approved" && !record.injected) },
-    { key: "injected", label: t("groupInjected"), items: filtered.filter((record) => record.status === "approved" && record.injected) }
+    { key: "pending", label: t("groupPending"), items: settled(false).filter((record) => record.status === "suggested") },
+    { key: "injected", label: t("groupInjected"), items: settled(true).filter((record) => record.status === "approved" && record.injected) },
+    { key: "ondemand", label: t("groupOnDemand"), items: settled(true).filter((record) => record.status === "approved" && !record.injected) }
   ].filter((group) => group.items.length > 0);
+  const coldItems = settled(false).filter((record) => record.status === "approved" && isCold(record.lastUsedAt, coldNow));
+  const memoryCard = (record, options = {}) => {
+    const isQuarantined = options.quarantined === true || record.quarantined;
+    const injectable = record.status === "approved" && !isQuarantined;
+    return (0, import_react.createElement)(
+      "div",
+      {
+        key: record.id,
+        style: {
+          ...ssid.card,
+          // 隔离区显眼但不吓人：左边一条警示色，不换底色（安全网，不是错误）
+          ...isQuarantined ? { borderLeft: "3px solid var(--dsw-alias-state-warning-primary, #f7c94f)" } : {}
+        }
+      },
+      (0, import_react.createElement)("div", { style: ssid.text }, ContentWithRefs({ text: record.content })),
+      // 隔离原因：命中的规则名（安全网，只陈述事实，不做道德评判）
+      isQuarantined ? (0, import_react.createElement)(
+        "div",
+        { style: { ...ssid.muted, marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" } },
+        (0, import_react.createElement)("span", {
+          style: {
+            fontSize: 10,
+            padding: "1px 7px",
+            borderRadius: 8,
+            fontWeight: 600,
+            background: "var(--dsw-alias-state-warning-tertiary, rgba(247,201,79,.16))",
+            color: "var(--dsw-alias-state-warning-primary, #f7c94f)"
+          }
+        }, t("groupQuarantine")),
+        (0, import_react.createElement)("span", null, record.quarantineReason === void 0 || record.quarantineReason === "" ? t("quarantineReason", { reason: "\u2014" }) : t("quarantineReason", { reason: record.quarantineReason }))
+      ) : null,
+      // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
+      record.keywords !== void 0 && record.keywords.length > 0 ? (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 } },
+        record.keywords.map((keyword) => (0, import_react.createElement)("span", {
+          key: keyword,
+          style: {
+            fontSize: 10,
+            padding: "1px 7px",
+            borderRadius: 8,
+            background: "var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))",
+            color: "var(--dsw-alias-label-secondary, #67748a)"
+          }
+        }, keyword))
+      ) : null,
+      (0, import_react.createElement)(
+        "div",
+        { style: { ...ssid.muted, marginTop: 6 } },
+        `${record.namespace} \xB7 ${record.status === "approved" ? t("approved") : t("suggested")}${record.injected ? ` \xB7 ${t("groupInjected")}` : ""}${record.lastUsedAt !== void 0 ? ` \xB7 ${t("lastUsedAt")} ${fmtDate(record.lastUsedAt)}` : ""}${isCold(record.lastUsedAt, coldNow) ? ` \xB7 ${t("coldHint")}` : ""}${record.hitCount > 0 ? ` \xB7 ${t("hitCount", { count: record.hitCount })}` : ""}`
+      ),
+      (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", gap: 6, marginTop: 8, alignItems: "center" } },
+        (0, import_react.createElement)("button", {
+          type: "button",
+          title: isQuarantined ? t("blockedWhileQuarantined") : record.status === "approved" ? t("injectSwitch") : t("approveFirst"),
+          disabled: !injectable,
+          onClick: () => {
+            void toggleInjected(record);
+          },
+          style: {
+            ...ssid.btn,
+            ...record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {},
+            opacity: injectable ? 1 : 0.4,
+            cursor: injectable ? "pointer" : "not-allowed"
+          }
+        }, record.injected ? `\u2713 ${t("injectSwitch")}` : t("injectSwitch")),
+        isQuarantined ? (0, import_react.createElement)("button", {
+          style: { ...ssid.btn, color: ssid.accent, borderColor: ssid.accent },
+          onClick: () => {
+            void release(record);
+          }
+        }, t("release")) : null,
+        record.status === "suggested" && !isQuarantined ? (0, import_react.createElement)("button", {
+          style: ssid.btn,
+          onClick: () => {
+            void memoryApi.confirm(record.id, props.cwd).then(() => reload());
+          }
+        }, t("confirm")) : null,
+        (0, import_react.createElement)("button", {
+          style: ssid.btn,
+          onClick: () => {
+            void memoryApi.forget(record.id, props.cwd).then(() => reload());
+          }
+        }, t("forget"))
+      )
+    );
+  };
+  const foldHeader = (label, count, open, toggle) => (0, import_react.createElement)(
+    "div",
+    {
+      style: { ...ssid.title, cursor: "pointer", marginBottom: 0 },
+      onClick: toggle,
+      onKeyDown: (event) => {
+        if (event.key === "Enter" || event.key === " ") toggle();
+      },
+      role: "button",
+      tabIndex: 0
+    },
+    (0, import_react.createElement)("span", null, `${open ? "\u25BE" : "\u25B8"} ${label}`),
+    (0, import_react.createElement)("span", { style: ssid.count }, String(count))
+  );
+  const quarantineSection = quarantinedScoped.length === 0 ? null : (0, import_react.createElement)(
+    "div",
+    { key: "quarantine", style: { display: "flex", flexDirection: "column", gap: 6 } },
+    foldHeader(t("groupQuarantine"), quarantinedScoped.length, quarantineOpen, () => {
+      setQuarantineOpen((open) => !open);
+    }),
+    (0, import_react.createElement)("div", { style: { ...ssid.muted, fontSize: 10.5 } }, t("groupQuarantineHint")),
+    quarantineOpen ? (0, import_react.createElement)(
+      "div",
+      { style: { display: "flex", flexDirection: "column", gap: 6 } },
+      quarantinedScoped.map((record) => memoryCard(record, { quarantined: true }))
+    ) : null
+  );
+  const coldSection = coldItems.length === 0 ? null : (0, import_react.createElement)(
+    "div",
+    { key: "cold", style: { display: "flex", flexDirection: "column", gap: 6 } },
+    foldHeader(t("groupCold", { days: COLD_DAYS }), coldItems.length, coldOpen, () => {
+      setColdOpen((open) => !open);
+    }),
+    coldOpen ? (0, import_react.createElement)(
+      "div",
+      { style: { display: "flex", flexDirection: "column", gap: 6 } },
+      coldItems.map((record) => memoryCard(record))
+    ) : null
+  );
+  const groupSections = groups.map((group) => (0, import_react.createElement)(
+    "div",
+    {
+      key: group.key,
+      style: { display: "flex", flexDirection: "column", gap: 6 }
+    },
+    (0, import_react.createElement)(
+      "div",
+      { style: ssid.title },
+      (0, import_react.createElement)("span", null, group.label),
+      (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 6 } },
+        group.key === "pending" && group.items.length > 0 ? (0, import_react.createElement)("button", {
+          type: "button",
+          title: t("confirmAll"),
+          onClick: () => {
+            void confirmAll();
+          },
+          style: { ...ssid.btn, padding: "1px 8px", fontSize: 10.5 }
+        }, t("confirmAll")) : null,
+        (0, import_react.createElement)("span", { style: ssid.count }, String(group.items.length))
+      )
+    ),
+    group.items.map((record) => memoryCard(record))
+  ));
+  const listSection = quarantineSection === null && groupSections.length === 0 && coldSection === null ? (0, import_react.createElement)("div", { key: "empty", style: ssid.empty }, t("empty")) : (0, import_react.createElement)(
+    "div",
+    { key: "groups", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    quarantineSection,
+    groupSections,
+    coldSection
+  );
   const modeTabs = (0, import_react.createElement)(
     "div",
     { style: { display: "flex", gap: 4 } },
@@ -799,83 +994,7 @@ function MemoryView(props) {
         preview.lines.length === 0 ? (0, import_react.createElement)("div", { style: ssid.muted }, t("empty")) : preview.lines.map((line, index) => (0, import_react.createElement)("div", { key: index, style: { ...ssid.muted, fontSize: 11 } }, line))
       ) : null,
       // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
-      namespace === "workspace" && (props.cwd === void 0 || props.cwd === "") ? (0, import_react.createElement)("div", { style: ssid.empty }, t("noWorkspace")) : groups.length === 0 ? (0, import_react.createElement)("div", { style: ssid.empty }, t("empty")) : groups.map((group) => (0, import_react.createElement)(
-        "div",
-        { key: group.key, style: { display: "flex", flexDirection: "column", gap: 6 } },
-        (0, import_react.createElement)(
-          "div",
-          { style: ssid.title },
-          (0, import_react.createElement)("span", null, group.label),
-          (0, import_react.createElement)(
-            "div",
-            { style: { display: "flex", alignItems: "center", gap: 6 } },
-            group.key === "pending" && group.items.length > 0 ? (0, import_react.createElement)("button", {
-              type: "button",
-              title: t("confirmAll"),
-              onClick: () => {
-                void confirmAll();
-              },
-              style: { ...ssid.btn, padding: "1px 8px", fontSize: 10.5 }
-            }, t("confirmAll")) : null,
-            (0, import_react.createElement)("span", { style: ssid.count }, String(group.items.length))
-          )
-        ),
-        group.items.map((record) => (0, import_react.createElement)(
-          "div",
-          { key: record.id, style: ssid.card },
-          (0, import_react.createElement)("div", { style: ssid.text }, ContentWithRefs({ text: record.content })),
-          // keywords 展示（0.3.5：设计约定 UI 显示 keywords）
-          record.keywords !== void 0 && record.keywords.length > 0 ? (0, import_react.createElement)(
-            "div",
-            { style: { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 } },
-            record.keywords.map((keyword) => (0, import_react.createElement)("span", {
-              key: keyword,
-              style: {
-                fontSize: 10,
-                padding: "1px 7px",
-                borderRadius: 8,
-                background: "var(--dsw-alias-bg-module-platform, rgba(128,148,168,.14))",
-                color: "var(--dsw-alias-label-secondary, #67748a)"
-              }
-            }, keyword))
-          ) : null,
-          (0, import_react.createElement)(
-            "div",
-            { style: { ...ssid.muted, marginTop: 6 } },
-            `${record.namespace} \xB7 ${record.status === "approved" ? t("approved") : t("suggested")}${record.injected ? ` \xB7 ${t("groupInjected")}` : ""}${record.lastUsedAt !== void 0 ? ` \xB7 \u4E0A\u641C ${fmtDate(record.lastUsedAt)}` : ""}${isCold(record.lastUsedAt) ? ` \xB7 ${t("coldHint")}` : ""}`
-          ),
-          (0, import_react.createElement)(
-            "div",
-            { style: { display: "flex", gap: 6, marginTop: 8, alignItems: "center" } },
-            (0, import_react.createElement)("button", {
-              type: "button",
-              title: record.status === "approved" ? t("injectSwitch") : t("approveFirst"),
-              disabled: record.status !== "approved",
-              onClick: () => {
-                void toggleInjected(record);
-              },
-              style: {
-                ...ssid.btn,
-                ...record.injected ? { color: ssid.accent, borderColor: ssid.accent } : {},
-                opacity: record.status !== "approved" ? 0.4 : 1,
-                cursor: record.status !== "approved" ? "not-allowed" : "pointer"
-              }
-            }, record.injected ? `\u2713 ${t("injectSwitch")}` : t("injectSwitch")),
-            record.status === "suggested" ? (0, import_react.createElement)("button", {
-              style: ssid.btn,
-              onClick: () => {
-                void memoryApi.confirm(record.id, props.cwd).then(() => reload());
-              }
-            }, t("confirm")) : null,
-            (0, import_react.createElement)("button", {
-              style: ssid.btn,
-              onClick: () => {
-                void memoryApi.forget(record.id, props.cwd).then(() => reload());
-              }
-            }, t("forget"))
-          )
-        ))
-      ))
+      namespace === "workspace" && (props.cwd === void 0 || props.cwd === "") ? (0, import_react.createElement)("div", { style: ssid.empty }, t("noWorkspace")) : listSection
     )
   );
 }

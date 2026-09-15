@@ -5,7 +5,7 @@
  */
 import { createRequire } from 'node:module'
 
-const SELF_VERSION = ((): string => {
+export const SELF_VERSION = ((): string => {
   try {
     // dist/index.js 位于包根 package.json 同级（../package.json）
     const require = createRequire(import.meta.url)
@@ -17,12 +17,16 @@ const SELF_VERSION = ((): string => {
 })()
 
 export const SELF_DESCRIPTION =
-  `[记忆系统自述] 当前环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
-  + '工作机制：①记忆以明文 JSON 存储（global→$DSH_HOME/storages、工作区→会话工作区 .dsh/storages 随 git 分享）；'
-  + '②模型写入即 suggested（待审核），仅人工审核（memory_confirm）后才 approved；'
-  + '③每轮注入 system prompt 的 = 「global 的 approved + injected」+「当前会话工作区的 approved + injected」，逐条为单行摘要（内容全文靠 memory_search 检索），并受注入预算限制（超预算按最近更新优先，省略条数在面板「注入预览」可见；常驻注入由用户控制，审核≠注入）；'
-  + '④工作区记忆按会话工作区路由（存储跟随仓库），memory_search 为 BM25 检索（中文 2-gram + 关键词加权，可配置语义融合），可检索任意状态（含待审核条目，可先评估再引用）；'
-  + '⑤修正过时内容用 memory_update（改动重置待审核，注入开关保留）。'
-  + `可用记忆工具共 6 个：memory_save / memory_list / memory_search / memory_confirm / memory_forget / memory_update。`
-  + '使用建议：相关历史上下文先 memory_search 检索再引用；新习惯/约定用 memory_save 写入（落在待审核）。'
-  + '（中/英文同义：This environment has a cross-session memory service; write suggestions via memory_save, retrieve via memory_search, and expect human review before approved.)'
+  `[记忆系统自述] 本环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
+  + '你有 6 个记忆工具：memory_save / memory_search / memory_list / memory_update / memory_confirm / memory_forget。'
+  + '**何时写入**（不必刻意找机会，遇到下面这些就动手）：'
+  + '① 用户表达长期偏好或约定（「以后都…」「记住…」「我们的规矩是…」）；'
+  + '② 用户纠正了你的做法或理解——把正确结论记下来；'
+  + '③ 得出跨会话仍然有用的结论、路径或坑，而非本次任务的临时细节。'
+  + '**不要记**：临时状态、未经验证的推测、能从代码或文档直接读到的事实（那类记「去哪查」即可）。'
+  + '**怎么写**：一条一件事，并给多角度关键词（同义词、缩写、中英），否则将来检索不到它。'
+  + '**锚点（可选）**：若这条记忆描述的是「随某个环境值变化的事实」（某工具版本下的行为、某环境变量决定的配置），用 anchor 参数把它绑到那个值上——值变了它会自动失效并标 stale，不会再被当成仍然正确。'
+  + '写入即生效（`approved`），人工只在例外时介入；命中密钥/凭据规则的写入会被隔离（不进注入与检索）。'
+  + '每轮注入的是「global + 当前会话工作区」里已生效且开着常驻开关的记忆摘要（受预算限制，超预算按最近更新优先）；全文要靠 memory_search。'
+  + '发现某条记忆与实际不符时用 memory_update 修正（保持生效）；确认没用的用 memory_forget。'
+  + '（English: dsh-memory provides cross-session memory. Writes take effect immediately; save durable preferences, corrections and reusable conclusions — not transient state, guesses, or facts readable from the repo (record where to look instead). Always add multi-angle keywords.)'

@@ -152,6 +152,8 @@ export function mountMemoryApi(ctx: Context): void {
         ...filter?.namespace !== undefined && typeof filter.namespace === 'string' ? { namespace: filter.namespace as 'global' | 'project' } : {},
         ...filter?.status !== undefined && typeof filter.status === 'string' ? { status: filter.status as 'suggested' | 'approved' } : {},
         ...filter?.injected !== undefined && typeof filter.injected === 'boolean' ? { injected: filter.injected } : {},
+        // 隔离过滤（2026-09-15）：引擎缺省排除隔离记录，面板要显式带 true 才取得到隔离区
+        ...filter?.quarantined !== undefined && typeof filter.quarantined === 'boolean' ? { quarantined: filter.quarantined } : {},
       }, cwdOf(record))
     },
     'reload': async (payload) => {

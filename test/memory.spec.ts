@@ -127,11 +127,23 @@ describe('dsh-memory plugin', () => {
     expect((await ctx.memory.list())[0]?.injected).toBe(false)
   })
 
-  it('0.3.0: new records default to suggested + injected:false', async () => {
+  it('2026-09-15: 写入即 approved（静默机制），injected 仍为 false', async () => {
     const { ctx } = await setup()
-    const record = await ctx.memory.remember({ content: 'fresh suggestion' })
-    expect(record.status).toBe('suggested')
+    const record = await ctx.memory.remember({ content: 'fresh memory' })
+    expect(record.status).toBe('approved')
     expect(record.injected).toBe(false)
+    expect(record.quarantined).toBe(false)
+  })
+
+  it('2026-09-15: 命中危险内容规则的写入被隔离——不进列表、不进检索，可显式取出审', async () => {
+    const { ctx } = await setup()
+    const secret = await ctx.memory.remember({ content: 'api_key = sk-abcdefghijklmnopqrstuvwx' })
+    expect(secret.status).toBe('suggested')
+    expect(secret.quarantined).toBe(true)
+    expect(secret.quarantineReason).toBeDefined()
+    expect((await ctx.memory.list()).some(record => record.id === secret.id)).toBe(false)
+    expect((await ctx.memory.search('api_key')).length).toBe(0)
+    expect((await ctx.memory.list({ quarantined: true })).some(record => record.id === secret.id)).toBe(true)
   })
 
   it('0.3.0: recall context injects only approved + injected:true (global; workspace needs its cwd)', async () => {
@@ -362,25 +374,141 @@ describe('dsh-memory plugin', () => {
     expect(byContent['legacy plain']?.injected).toBe(false)
   })
 
-  it('0.3.1: update rewrites content/keywords, resets to suggested, keeps injected switch', async () => {
+  it('2026-09-15: update rewrites content/keywords, keeps status and injected switch', async () => {
     const { ctx } = await setup()
     const record = await ctx.memory.remember({ content: 'stale fact', keywords: ['old'] })
-    await ctx.memory.setStatus(record.id, 'approved')
     await ctx.memory.setInjected(record.id, true)
 
     const updated = await ctx.memory.update(record.id, { content: 'fresh fact', keywords: ['new', 'Key'] })
     expect(updated.content).toBe('fresh fact')
     expect(updated.keywords).toEqual(['new', 'key']) // lowercased
-    expect(updated.status).toBe('suggested')          // 重置待审核
-    expect(updated.injected).toBe(true)               // 注入开关保留（审核通过后恢复）
+    expect(updated.status).toBe('approved')          // 静默机制：改动保持生效，不再退回待审核
+    expect(updated.injected).toBe(true)              // 注入开关保留
+    expect(updated.quarantined).toBe(false)
 
-    // 未审核不注入（status 非 approved）
-    expect(await ctx.memory.list({ status: 'approved', injected: true })).toEqual([])
+    // 仍在注入名单里
+    expect((await ctx.memory.list({ status: 'approved', injected: true })).length).toBe(1)
 
     // 只改 content 不动 keywords
     const partial = await ctx.memory.update(record.id, { content: 'half update' })
     expect(partial.content).toBe('half update')
     expect(partial.keywords).toEqual(['new', 'key'])
+  })
+
+  it('2026-09-15: update 命中危险规则则转为隔离（不进列表与检索）', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'plain note' })
+    await ctx.memory.setInjected(record.id, true)
+
+    const updated = await ctx.memory.update(record.id, { content: 'token = ghp_0123456789abcdefghijklmnopqrst' })
+    expect(updated.quarantined).toBe(true)
+    expect(updated.status).toBe('suggested')
+    expect((await ctx.memory.list()).some(item => item.id === record.id)).toBe(false)
+  })
+
+  it('2026-09-15: 命中两次即自动升常驻（淘汰机制的入口由信号驱动）', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha beta gamma', keywords: ['alpha'] })
+    expect(record.injected).toBe(false)
+
+    await ctx.memory.search('alpha')
+    const afterFirst = (await ctx.memory.list())[0]
+    expect(afterFirst?.injected).toBe(false)   // 一次偶然命中不够
+    expect(afterFirst?.hitCount).toBe(1)
+
+    await ctx.memory.search('alpha')
+    const afterSecond = (await ctx.memory.list())[0]
+    expect(afterSecond?.injected).toBe(true)
+    expect(afterSecond?.injectedAuto).toBe(true)
+    expect(afterSecond?.hitCount).toBe(2)
+  })
+
+  it('2026-09-15: 宽命中不批量记账（命中计数只认前几名，否则两次检索升满全库）', async () => {
+    const { ctx } = await setup()
+    // 20 条都含 alpha：BM25 会把它们全部打分，模拟真实库里的宽命中面
+    for (let i = 0; i < 20; i += 1) {
+      await ctx.memory.remember({ content: `alpha beta note ${i}`, keywords: ['alpha'] })
+    }
+
+    const hits = await ctx.memory.search('alpha')
+    expect(hits.length).toBe(20)   // 返回值不受记账上限影响
+
+    const all = await ctx.memory.list()
+    const counted = all.filter(item => (item.hitCount ?? 0) > 0)
+    expect(counted.length).toBe(5)
+    expect(counted.every(item => item.injected === false)).toBe(true)   // 一次检索不足以升常驻
+  })
+
+  it('2026-09-15: 模板记录不参与记忆检索，也不会被自动升常驻', async () => {
+    const { ctx } = await setup()
+    await ctx.memory.promptAdd({ name: 'promo-guard', content: 'alpha beta gamma template body', tags: ['alpha'] })
+
+    const hits = await ctx.memory.search('alpha')
+    expect(hits.some(hit => (hit.record.kind ?? 'fact') === 'prompt')).toBe(false)
+
+    await ctx.memory.search('alpha')
+    const prompts = await ctx.memory.list({ kind: 'prompt' })
+    const target = prompts.find(item => item.meta?.name === 'promo-guard')
+    expect(target?.injected).toBe(false)
+    expect(target?.injectedAuto).toBeUndefined()
+
+    // 兜底：即使存储里被标成 injected（旧版本或人工改文件留下的），注入列表也不收模板
+    expect(ctx.memory.recallRecords().some(item => item.kind === 'prompt')).toBe(false)
+  })
+
+  it('2026-09-15: 人工开过的注入不被自动降级（那是人的决定，不是信号的结论）', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'manual pin' })
+    await ctx.memory.setInjected(record.id, true)
+
+    const demoted = await ctx.memory.demoteStale(undefined, Date.now() + 60 * 24 * 60 * 60 * 1000)
+    expect(demoted).toBe(0)
+    expect((await ctx.memory.list())[0]?.injected).toBe(true)
+  })
+
+  it('2026-09-15: 人工关掉的注入不被自动重开（人工控制优先，与降级侧对称）', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha beta gamma', keywords: ['alpha'] })
+    await ctx.memory.setInjected(record.id, false)   // 人工显式关闭
+
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+
+    const after = (await ctx.memory.list())[0]
+    expect(after?.injected).toBe(false)     // 命中再多也不越过人工决定
+    expect(after?.injectedAuto).toBe(false)
+    expect(after?.hitCount).toBe(2)         // 计数照常，只是不再据此改注入
+  })
+
+  it('2026-09-15: 自动升的常驻在长期未命中后降级——记忆不会无限累积', async () => {
+    const { ctx } = await setup()
+    await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+    expect((await ctx.memory.list())[0]?.injected).toBe(true)
+
+    const later = Date.now() + 31 * 24 * 60 * 60 * 1000
+    expect(await ctx.memory.demoteStale(undefined, later)).toBe(1)
+
+    const after = (await ctx.memory.list())[0]
+    expect(after?.injected).toBe(false)
+    expect(after?.status).toBe('approved')   // 只是退出常驻，仍可检索
+  })
+
+  it('2026-09-15: 旧 suggested 迁移为 approved（新语义写入即生效），且迁移幂等', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'legacy pending note' })
+    // 模拟旧数据：把记录降到「等人工审核」的状态（旧语义里的 suggested）
+    await ctx.memory.setStatus(record.id, 'suggested')
+    expect((await ctx.memory.list())[0]?.status).toBe('suggested')
+
+    const stats = await ctx.memory.migrateLegacy()
+    expect(stats.approved).toBe(1)
+    expect(stats.quarantined).toBe(0)
+    expect((await ctx.memory.list())[0]?.status).toBe('approved')
+
+    // 幂等：再跑一次无事可做（也因此不会重复留备份）
+    expect(await ctx.memory.migrateLegacy()).toEqual({ approved: 0, quarantined: 0, counted: 0 })
   })
 
   it('0.3.1: memory_update tool exists and rewires to engine.update', async () => {
@@ -390,7 +518,7 @@ describe('dsh-memory plugin', () => {
     expect(tool?.name).toBe('memory_update')
     const result = await tool?.execute?.({ id: String(record.id), content: 'updated' }, {} as never)
     expect(result?.content).toBe('updated')
-    expect(result?.status).toBe('suggested')
+    expect(result?.status).toBe('approved')   // 静默机制：更新即生效
     expect((await ctx.memory.list())[0]?.content).toBe('updated')
   })
 
@@ -435,5 +563,139 @@ describe('dsh-memory plugin', () => {
     // 外部写入的旧 auto 也走迁移：approved + injected:true
     expect((await ctx.memory.list({ status: 'approved', injected: true })).map(r => r.content))
       .toEqual(['externally edited'])
+  })
+
+  it('2026-09-15 ⑧: 来源字段缺省 agent，可显式写 human；旧记录无此字段照常工作', async () => {
+    const { ctx, globalRoot } = await setup()
+    const agentRecord = await ctx.memory.remember({ content: 'model note' })
+    const humanRecord = await ctx.memory.remember({ content: 'human note', source: 'human' })
+    expect(agentRecord.source).toBe('agent')
+    expect(humanRecord.source).toBe('human')
+
+    // 落盘明文可查（三处字段同步：MemoryRecord / StoredBlock / blockSchema）
+    const file = join(globalRoot, 'memory.json')
+    const unit = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, { source?: string }> }
+    }
+    expect(unit.tables.blocks[String(agentRecord.id)]?.source).toBe('agent')
+    expect(unit.tables.blocks[String(humanRecord.id)]?.source).toBe('human')
+
+    // 兼容旧记忆：无 source 的旧记录照常读写，source 保持 undefined（来源未知，不猜）
+    unit.tables.blocks['legacy-no-source'] = {
+      namespace: 'global', status: 'approved', content: 'legacy no source', keywords: [], createdAt: 1, updatedAt: 1,
+    }
+    writeFileSync(file, JSON.stringify(unit))
+    await ctx.memory.reload()
+
+    const legacy = (await ctx.memory.list()).find(record => record.content === 'legacy no source')
+    expect(legacy?.source).toBeUndefined()
+    expect(legacy?.status).toBe('approved')
+    // 迁移不碰旧记录的 source（缺省即「未知历史来源」）
+    await ctx.memory.migrateLegacy()
+    expect((await ctx.memory.list()).find(record => record.content === 'legacy no source')?.source).toBeUndefined()
+  })
+
+  it('2026-09-15 ⑥: 每次检索记一条查询日志（查询文本截断 + 命中数 + 时间），与 memory.json 同目录', async () => {
+    const { ctx, globalRoot } = await setup()
+    await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
+
+    await ctx.memory.search('alpha')
+    await ctx.memory.search(`  ${'x'.repeat(200)}  `)
+
+    // 与 memory.json 同目录（不落子目录）
+    expect(existsSync(join(globalRoot, 'memory.json'))).toBe(true)
+    const log = JSON.parse(readFileSync(join(globalRoot, 'query-log.json'), 'utf8')) as {
+      queries: Array<{ query: string, hits: number, at: number }>
+    }
+    expect(log.queries.map(entry => [entry.query, entry.hits]))
+      .toEqual([['alpha', 1], ['x'.repeat(120), 0]])
+    expect(log.queries.every(entry => entry.at > 0)).toBe(true)
+  })
+
+  it('2026-09-15 ⑥: 查询日志写失败不影响检索（日志是旁路证据，不是检索的一部分）', async () => {
+    // 让日志路径指向一个目录：写文件必失败（EISDIR），检索照常
+    const logDir = await mkdtemp(join(tmpdir(), 'dsh-memory-logdir-'))
+    const { ctx } = await setup({ queryLogPath: logDir })
+    await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
+
+    expect((await ctx.memory.search('alpha')).map(hit => hit.record.content)).toEqual(['alpha beta'])
+    // 检索路径的其他环节（命中记账）也不受牵连
+    expect((await ctx.memory.list())[0]?.hitCount).toBe(1)
+  })
+
+  it('2026-09-15 ⑥: 模板库检索不进记忆查询日志', async () => {
+    const { ctx, globalRoot } = await setup()
+    await ctx.memory.search('template query', { kind: 'prompt' })
+    expect(existsSync(join(globalRoot, 'query-log.json'))).toBe(false)
+  })
+
+  it('2026-09-15 ⑥: 查询里带凭据时不落原文（按硬拦规则脱敏）', async () => {
+    const { ctx, globalRoot } = await setup()
+    await ctx.memory.search('api_key = sk-abcdefghijklmnopqrstuvwx')
+
+    const raw = readFileSync(join(globalRoot, 'query-log.json'), 'utf8')
+    expect(raw).not.toContain('sk-abcdefghijklmnopqrstuvwx')
+    const log = JSON.parse(raw) as { queries: Array<{ query: string, hits: number }> }
+    expect(log.queries[0]?.query).toContain('已脱敏')
+    expect(log.queries[0]?.hits).toBe(0)
+  })
+
+  it('2026-09-15 ⑥: 反查——空命中的查询能指出「本应命中」的候选（vue3 ↔ vue）', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: '组合式 API 的写法', keywords: ['vue'] })
+
+    // 检索按整词比对：vue3 against keywords ['vue'] 不命中——正是反例 4 的漏检
+    expect(await ctx.memory.search('vue3')).toEqual([])
+
+    const report = await ctx.memory.suggestKeywordGaps()
+    expect(report.logSize).toBe(1)
+    expect(report.misses).toBe(1)
+    expect(report.gaps.map(gap => gap.query)).toEqual(['vue3'])
+    const candidates = report.gaps[0]?.candidates ?? []
+    expect(candidates.map(candidate => candidate.id)).toEqual([String(record.id)])
+    expect(candidates[0]?.exact).toBe(0)
+    expect(candidates[0]?.relaxed).toEqual(['vue3'])   // 前缀近似把它捞了回来
+    expect(candidates[0]?.keywords).toEqual(['vue'])   // 补写 keywords 的基础
+    expect(candidates[0]?.excerpt).toContain('组合式')
+
+    // 第一版只产出报告：不自动改写记忆
+    expect((await ctx.memory.list())[0]?.keywords).toEqual(['vue'])
+  })
+
+  it('2026-09-15 ⑥: 反查——确实没有的查询归为知识缺口（候选为空）', async () => {
+    const { ctx } = await setup()
+    await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
+    await ctx.memory.search('zebra')
+
+    const report = await ctx.memory.suggestKeywordGaps()
+    expect(report.gaps.map(gap => gap.query)).toEqual(['zebra'])
+    expect(report.gaps[0]?.candidates).toEqual([])
+  })
+
+  it('2026-09-15 ⑥: 影响力统计按来源聚合（写入量 / 命中数 / 注入数）', async () => {
+    const { ctx, globalRoot } = await setup()
+    await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
+    await ctx.memory.remember({ content: 'alpha gamma', keywords: ['alpha'] })
+    await ctx.memory.remember({ content: 'alpha from human', keywords: ['alpha'], source: 'human' })
+
+    await ctx.memory.search('alpha')   // 三条各命中一次
+    const bySource = Object.fromEntries((await ctx.memory.sourceStats()).map(stat => [stat.source, stat]))
+    expect(bySource.agent?.writes).toBe(2)
+    expect(bySource.agent?.hits).toBe(2)
+    expect(bySource.human?.writes).toBe(1)
+    expect(bySource.human?.hits).toBe(1)
+    expect(bySource.agent?.injected).toBe(0)   // 命中一次还没到自动升常驻的阈值
+
+    // 无 source 的旧记录归 unknown（不猜测历史来源）
+    const file = join(globalRoot, 'memory.json')
+    const unit = JSON.parse(readFileSync(file, 'utf8')) as { tables: { blocks: Record<string, unknown> } }
+    unit.tables.blocks['legacy-source-less'] = {
+      namespace: 'global', status: 'approved', content: 'legacy fact', keywords: [], createdAt: 1, updatedAt: 1,
+    }
+    writeFileSync(file, JSON.stringify(unit))
+    await ctx.memory.reload()
+    const after = Object.fromEntries((await ctx.memory.sourceStats()).map(stat => [stat.source, stat]))
+    expect(after.unknown?.writes).toBe(1)
+    expect(after.agent?.writes).toBe(2)
   })
 })

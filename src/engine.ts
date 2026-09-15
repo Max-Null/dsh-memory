@@ -16,6 +16,14 @@ import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import { bm25FieldScores, cosineSimilarity, rrfFuse } from './bm25.ts'
 import { parsePromptFile, scanPromptDir, writePromptFile, type PromptFile } from './prompt-files.ts'
+import { detectSensitive } from './quarantine.ts'
+import { SELF_VERSION } from './self.ts'
+import { anchorHolds } from './anchors.ts'
+import type { AnchorProbes, MemoryAnchor } from './anchors.ts'
+import { QueryLog, rankGapCandidates, summarizeQueryLog, summarizeSources } from './query-log.ts'
+import type { MemorySource, SourceStat } from './query-log.ts'
+
+export type { MemorySource, QueryLogEntry, SourceStat } from './query-log.ts'
 
 declare const memoryIdBrand: unique symbol
 /** Opaque identity of one stored memory record. */
@@ -27,8 +35,9 @@ export function MemoryId(id: string): MemoryId {
 
 export type MemoryNamespace = 'global' | 'project'
 /**
- * 审核维度（0.3.0）：`suggested` 待审核（模型写入）；`approved` 已人工
- * 审核通过。注入与否由独立维度 `injected` 控制（见 MemoryRecord）。
+ * 审核维度（0.3.0）：`suggested` 未生效；`approved` 已生效。2026-09-15 起写入默认
+ * `approved`（静默机制），`suggested` 主要留给被隔离的记录与人工回退。
+ * 注入与否由独立维度 `injected` 控制（见 MemoryRecord）。
  */
 export type MemoryStatus = 'suggested' | 'approved'
 
@@ -61,6 +70,28 @@ export interface MemoryRecord {
   status: MemoryStatus
   /** 注入维度：true = 每轮全量注入 system prompt（常驻）；false = 仅检索。 */
   injected: boolean
+  /**
+   * 隔离位（2026-09-15）：命中危险内容规则 → 不进注入、不进检索，等人工放行或删除。
+   * 与 `status` 双保险：隔离记录同时保持 `suggested`，即使某条路径漏了过滤也不会注入。
+   */
+  quarantined: boolean
+  /** 隔离原因（命中的规则名，诊断与面板展示用）。 */
+  quarantineReason?: string
+  /** 命中次数（2026-09-15 淘汰机制）：被 memory_search 命中的累计次数。 */
+  hitCount: number
+  /**
+   * 写入来源（2026-09-15 反例 5）：'agent' = 主模型写入，'human' = 人工写入；
+   * 缺省 = 旧记录（来源未知，不猜测）。影响力统计按它聚合（见 sourceStats）。
+   */
+  source?: MemorySource
+  /** 注入由信号自动开启（true）还是人工设置（缺省）；只有自动开的会被「长期未命中」自动降级。 */
+  injectedAuto?: boolean
+  /** 有效性锚点（2026-09-15）：绑定到某个可探测的环境值；值变了即失效。 */
+  anchor?: MemoryAnchor
+  /** 锚点已失效（由会话启动时的校验写入）；失效不删除，只降权并在检索结果里标注。 */
+  stale?: boolean
+  /** 失效原因（锚点名 + 声明值 vs 当前值，诊断用）。 */
+  staleReason?: string
   content: string
   keywords: string[]
   createdAt: number
@@ -77,12 +108,21 @@ export interface MemoryWrite {
   content: string
   namespace?: MemoryNamespace
   keywords?: string[]
+  /** 写入来源（2026-09-15）；缺省 'agent'（主模型写入）。面板等人工路径传 'human'。 */
+  source?: MemorySource
+  /**
+   * 有效性锚点（可选，2026-09-15）：把这条记忆绑定到某个可探测的环境值上，值变了即自动
+   * 失效。只用于「随环境变化的事实」（某工具版本下的行为、某环境变量决定的配置）。
+   */
+  anchor?: MemoryAnchor
 }
 
 export interface MemoryFilter {
   namespace?: MemoryNamespace
   status?: MemoryStatus
   injected?: boolean
+  /** 隔离过滤（2026-09-15）：缺省排除隔离记录；传 true 只取隔离记录（面板审用）。 */
+  quarantined?: boolean
   /** 记录类别过滤（0.6.0）；缺省不过滤（工具层显式传 kind='fact' 保持旧行为）。 */
   kind?: MemoryKind
 }
@@ -92,12 +132,62 @@ export interface MemoryHit {
   score: number
 }
 
+/** 反查候选（{@link MemoryEngine.suggestKeywordGaps}）：一条「本应命中」的现存记忆。 */
+export interface KeywordGapCandidate {
+  id: string
+  /** 正文摘要（{@link GAP_EXCERPT_CHARS} 字符以内）。 */
+  excerpt: string
+  /** 现有关键词；补写时在其基础上追加。 */
+  keywords: string[]
+  /** 精确词元命中数：> 0 表示「现在重搜就该命中」。 */
+  exact: number
+  /** 前缀近似命中的查询词元（如 vue3 ↔ vue）。 */
+  relaxed: string[]
+}
+
+/** 一个空命中查询的反查结果；`candidates` 为空即知识缺口。 */
+export interface KeywordGap {
+  query: string
+  /** 该查询在日志里空命中的次数。 */
+  count: number
+  /** 最近一次出现的时间。 */
+  lastAt: number
+  candidates: KeywordGapCandidate[]
+}
+
+/** {@link MemoryEngine.suggestKeywordGaps} 的报告（只产出报告，不自动补写）。 */
+export interface KeywordGapReport {
+  /** 查询日志总条数。 */
+  logSize: number
+  /** 空命中条数（含被 `limit` 截掉的查询）。 */
+  misses: number
+  /** 逐查询的候选（最多 `limit` 个查询，按最近出现排序）。 */
+  gaps: KeywordGap[]
+}
+
 /** One durable memory change, emitted after the backend acknowledges the write. */
 export type MemoryChange =
   | { operation: 'remembered'; record: MemoryRecord }
   | { operation: 'forgotten'; id: MemoryId }
   | { operation: 'status'; id: MemoryId; status: MemoryStatus }
   | { operation: 'injected'; id: MemoryId; injected: boolean }
+  | { operation: 'quarantined'; id: MemoryId; quarantined: boolean }
+
+/** 自动升常驻所需的命中次数（2026-09-15）：一次偶然命中不足以证明「每轮都值得付费」。 */
+const AUTO_INJECT_HITS = 2
+/**
+ * 一次检索里最多把前多少条记为「被使用」（2026-09-15）。
+ *
+ * 不设上限时，命中计数退化成「和查询有任意字符重叠」：BM25 对常见 2-gram 会给全库打分，
+ * 一句「实机验证标记」在本机就能命中 81 条，于是**两次检索把所有 approved 记忆都升成常驻**，
+ * 注入预算当场被历史条目占满——「反复被命中才值得每轮付费」这个判据也就失效了。
+ * 取前 K 名接近「模型真的会看的那几条」，且与检索返回值解耦（返回值不动）。
+ */
+const HIT_MARK_LIMIT = 5
+/** 反查候选的正文摘要长度（字符）。 */
+const GAP_EXCERPT_CHARS = 160
+/** 自动降级的天数阈值（2026-09-15）：与面板的冷数据判定（COLD_DAYS=30）对齐。 */
+const AUTO_DEMOTE_DAYS = 30
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -119,6 +209,22 @@ interface StoredBlock {
   namespace: MemoryNamespace
   status: StoredStatus
   injected?: boolean
+  /** 隔离位（2026-09-15）；缺省 = 未隔离。 */
+  quarantined?: boolean
+  /** 隔离原因（规则名）。 */
+  quarantineReason?: string
+  /** 命中次数（2026-09-15 淘汰机制）；缺省 0。 */
+  hitCount?: number
+  /** 写入来源（2026-09-15）；缺省 = 旧记录（来源未知；迁移不动它）。 */
+  source?: MemorySource
+  /** 注入由信号自动开启（true）还是人工设置（false/缺省）；只有自动开的会被自动降级。 */
+  injectedAuto?: boolean
+  /** 有效性锚点（2026-09-15）；缺省 = 未绑定锚点。 */
+  anchor?: MemoryAnchor
+  /** 锚点已失效（会话启动校验写入）；失效只降权并标注，不删除。 */
+  stale?: boolean
+  /** 失效原因（锚点名 + 声明值 vs 当前值）。 */
+  staleReason?: string
   content: string
   keywords: string[]
   createdAt: number
@@ -136,6 +242,18 @@ const blockSchema = z.object({
   namespace: z.enum(['global', 'project']),
   status: z.enum(['suggested', 'approved', 'auto', 'suggest']),
   injected: z.boolean().optional(),
+  quarantined: z.boolean().optional(),
+  quarantineReason: z.string().optional(),
+  hitCount: z.number().optional(),
+  source: z.enum(['agent', 'human']).optional(),
+  injectedAuto: z.boolean().optional(),
+  anchor: z.object({
+    kind: z.enum(['env', 'tool-list', 'self-version']),
+    name: z.string().optional(),
+    value: z.string(),
+  }).optional(),
+  stale: z.boolean().optional(),
+  staleReason: z.string().optional(),
   content: z.string(),
   keywords: z.array(z.string()),
   createdAt: z.number(),
@@ -212,6 +330,15 @@ function toRecord(id: string, block: StoredBlock): MemoryRecord {
     createdAt: block.createdAt,
     updatedAt: block.updatedAt,
     ...block.lastUsedAt === undefined ? {} : { lastUsedAt: block.lastUsedAt },
+    quarantined: block.quarantined === true,
+    ...block.quarantineReason === undefined ? {} : { quarantineReason: block.quarantineReason },
+    hitCount: block.hitCount ?? 0,
+    // ⑧ 来源（2026-09-15）：旧记录无此字段 → 不透传（= 来源未知），不猜
+    ...block.source === undefined ? {} : { source: block.source },
+    ...block.injectedAuto === undefined ? {} : { injectedAuto: block.injectedAuto },
+    ...block.anchor === undefined ? {} : { anchor: block.anchor },
+    ...block.stale === undefined ? {} : { stale: block.stale },
+    ...block.staleReason === undefined ? {} : { staleReason: block.staleReason },
   }
   // 0.6.0 模板库字段（缺省 fact；prompt 元数据透传）
   return {
@@ -264,6 +391,11 @@ export interface MemoryConfig {
   /** 全局提示词模板根目录（0.6.0）；默认 `$DSH_HOME/prompt-library`。
    *  project 模板随工作区（`<workspace>/.dsh/prompt-library`，与记忆同构）。 */
   promptGlobalRoot?: string
+  /**
+   * 查询日志文件路径（2026-09-15 §六.6）；默认为全局存储根下的 `query-log.json`
+   * ——即与 `memory.json` **同目录**（`$DSH_HOME/storages/query-log.json`），不落子目录。
+   */
+  queryLogPath?: string
 }
 
 /**
@@ -283,6 +415,8 @@ export class MemoryEngine extends Service {
   /** backend 只注册一次（registry 重名抛 duplicate；reload 清缓存后不得重复注册）。 */
   private registeredProjectBackends = new Set<string>()
   private facility?: DomainFacility
+  /** 会话启动维护只跑一次的标记（2026-09-15）。 */
+  private maintenanceDone = false
 
   constructor(ctx: import('@deepseek-ai/cordis').Context, private readonly config: MemoryConfig = {}) {
     super(ctx, 'memory')
@@ -378,7 +512,11 @@ export class MemoryEngine extends Service {
     await this.openGlobalFacility()
   }
 
-  /** Create one record in `suggested` status — never self-promoting. */
+  /**
+   * Create one record. 低危内容直接 `approved`（静默生效，2026-09-15 静默记忆机制）；
+   * 命中危险内容规则则隔离：`status` 留 `suggested`（天然不注入）**并且**置
+   * `quarantined`（不进检索），双保险，等待人工放行或删除。
+   */
   async remember(input: MemoryWrite, projectCwd?: string): Promise<MemoryRecord> {
     const namespace = input.namespace ?? 'global'
     const table = namespace === 'project'
@@ -387,14 +525,23 @@ export class MemoryEngine extends Service {
     if (table === undefined) throw new Error('cannot write project memory without a workspace cwd')
     const id = randomUUID()
     const now = Date.now()
+    // 关键词一并参与判定：密钥塞进 keywords 同样会在检索结果里外泄
+    const verdict = detectSensitive(input.content, ...(input.keywords ?? []))
     const block: StoredBlock = {
       namespace,
-      status: 'suggested',
+      status: verdict.quarantined ? 'suggested' : 'approved',
       injected: false,
       content: input.content,
       keywords: (input.keywords ?? []).map(keyword => keyword.toLowerCase()),
       createdAt: now,
       updatedAt: now,
+      // ⑧ 来源（2026-09-15）：缺省 'agent'——写入这条记忆的就是主模型
+      source: input.source ?? 'agent',
+      // 有效性锚点（可选）：值变了这条记忆会被标 stale，不再被当成仍然正确
+      ...input.anchor === undefined ? {} : { anchor: input.anchor },
+      ...verdict.quarantined
+        ? { quarantined: true, ...verdict.reason === undefined ? {} : { quarantineReason: verdict.reason } }
+        : {},
     }
     await table.put(id, block)
     const record = toRecord(id, block)
@@ -405,13 +552,31 @@ export class MemoryEngine extends Service {
   async list(filter?: MemoryFilter, projectCwd?: string): Promise<MemoryRecord[]> {
     const records = await this.allRecords(filter?.namespace, projectCwd)
     return records.filter(record =>
-      (filter?.status === undefined || record.status === filter.status)
+      // 隔离记录默认整体排除（不进列表、不进检索，因而也不进注入预览）；
+      // 面板要用 filter.quarantined === true 显式取出来审（2026-09-15）。
+      (filter?.quarantined === undefined ? record.quarantined !== true : record.quarantined === filter.quarantined)
+      && (filter?.status === undefined || record.status === filter.status)
       && (filter?.injected === undefined || record.injected === filter.injected)
       && (filter?.kind === undefined || (record.kind ?? 'fact') === filter.kind))
   }
 
+  /**
+   * 关键词检索。每次成功返回的检索都记一条查询日志（⑥ 2026-09-15）——命中与否都记：
+   * 漏检不产生任何事件，只有日志能事后回答「哪些查询本该命中谁」（反例 4）。日志是旁路：
+   * 写失败只记 warn，绝不改变本次检索结果。
+   */
   async search(query: string, filter?: MemoryFilter, projectCwd?: string): Promise<MemoryHit[]> {
-    const records = await this.list(filter, projectCwd)
+    const hits = await this.rank(query, filter, projectCwd)
+    this.recordQuery(query, hits.length, filter)
+    return hits
+  }
+
+  /** 检索打分本体（BM25 + 可选语义融合）；查询日志由 {@link search} 记录。 */
+  private async rank(query: string, filter?: MemoryFilter, projectCwd?: string): Promise<MemoryHit[]> {
+    // 记忆检索默认只看 fact（2026-09-15）：模板是文件库、有独立的 prompt_search 通道，
+    // 混进来的代价不只是占返回条数——模板也会被记命中，然后「因为经常被搜到」升成常驻。
+    // 显式传 kind 的调用方（prompt_search）照旧生效。
+    const records = await this.list({ kind: 'fact', ...filter }, projectCwd)
     // 0.5.2：content 与 keywords 分离打加权 BM25（人工关键词命中权重更高）
     const scores = bm25FieldScores(query, records.map(record => ({
       body: record.content,
@@ -421,8 +586,10 @@ export class MemoryEngine extends Service {
       .map((record, index) => ({ record, score: scores[index] ?? 0 }))
       .filter(hit => hit.score > 0)
       .sort((left, right) => right.score - left.score)
-    // 0.5.3：命中即标记使用（冷热追踪）——写回按命中快照之后执行，不影响本次结果
-    await this.markUsed(bm25Ranked.map(hit => hit.record.id), projectCwd)
+    // 0.5.3：命中即标记使用（冷热追踪）——写回按命中快照之后执行，不影响本次结果。
+    // 2026-09-15：只记前 `HIT_MARK_LIMIT` 名（BM25 命中面极宽，全记等于给全库计数）；
+    // 记账在语义融合之前，按 BM25 名次取，融合结果只影响返回顺序、不影响计数。
+    await this.markUsed(bm25Ranked.slice(0, HIT_MARK_LIMIT).map(hit => hit.record.id), projectCwd)
     // 0.5.2：配置 embeddings 时与语义结果 RRF 融合；缺省/失败降级回纯 BM25
     if (this.config.embeddings === undefined) return bm25Ranked
     try {
@@ -492,6 +659,55 @@ export class MemoryEngine extends Service {
   }
 
   /** 按已知 id 定位记录所在表（global 优先，其次当前工作区表）。 */
+  /**
+   * 会话启动维护（2026-09-15）：一次扫描做完三件事——旧数据迁移、长期未命中的自动降级、
+   * 锚点批量校验。只跑一次、幂等、**失败不阻断**（记忆可用性优先于维护完成度）。
+   *
+   * 调用点在 `ensureProjectOpen`：它是 async，且每会话首次打开工作区表时必经。
+   * `memory:recall` 的 provider 是**同步**回调，不能在那里 await。
+   *
+   * @param projectCwd - 会话工作区：迁移/降级/校验都连它一起处理。
+   */
+  private async runMaintenanceOnce(projectCwd: string): Promise<void> {
+    if (this.maintenanceDone) return
+    this.maintenanceDone = true
+    try {
+      const migration = await this.migrateLegacy(projectCwd)
+      if (migration.approved > 0 || migration.quarantined > 0 || migration.counted > 0) {
+        this.ctx.logger?.info?.(
+          `dsh-memory: 旧数据迁移 放行 ${migration.approved} / 隔离 ${migration.quarantined}`
+          + ` / 回填计数 ${migration.counted}`,
+        )
+      }
+      const demoted = await this.demoteStale(projectCwd)
+      if (demoted > 0) this.ctx.logger?.info?.(`dsh-memory: 长期未命中，撤下常驻 ${demoted} 条`)
+      const staled = await this.verifyAnchors(this.anchorProbes(), projectCwd)
+      if (staled > 0) this.ctx.logger?.info?.(`dsh-memory: 锚点校验更新 ${staled} 条`)
+    } catch (error) {
+      this.ctx.logger?.warn?.(`dsh-memory: 启动维护失败（不影响使用）：${String(error)}`)
+    }
+  }
+
+  /**
+   * 锚点探测上下文。`toolNames` 拿不到时返回 `undefined`——**不能给空数组**：那会被判成
+   * 「工具全没了」，让所有 `tool-list` 锚点误失效。
+   */
+  private anchorProbes(): AnchorProbes {
+    let toolNames: string[] | undefined
+    try {
+      const tools = this.ctx.get('tools') as { list?: () => Array<{ name?: string }> } | undefined
+      const listed = tools?.list?.()
+      if (Array.isArray(listed)) {
+        toolNames = listed
+          .map(tool => tool.name)
+          .filter((name): name is string => typeof name === 'string')
+      }
+    } catch {
+      toolNames = undefined
+    }
+    return { ...(toolNames === undefined ? {} : { toolNames }), selfVersion: SELF_VERSION }
+  }
+
   private tableOf(id: MemoryId, projectCwd?: string): KvTable<string, StoredBlock> | undefined {
     const global = this.requireTable('global')
     if (global.get(id) !== undefined) return global
@@ -500,7 +716,7 @@ export class MemoryEngine extends Service {
     return project !== undefined && project.get(id) !== undefined ? project : undefined
   }
 
-  /** 命中标记：把 lastUsedAt 写回（命中记录不存在时跳过；不 emit 事件——统计性字段）。 */
+  /** 命中标记：写回 lastUsedAt 与命中次数，达标即自动升常驻（2026-09-15）。 */
   private async markUsed(ids: MemoryId[], projectCwd?: string): Promise<void> {
     if (ids.length === 0) return
     const now = Date.now()
@@ -511,14 +727,287 @@ export class MemoryEngine extends Service {
     for (const id of ids) {
       const globalBlock = global.get(id)
       if (globalBlock !== undefined) {
-        await global.put(id, { ...globalBlock, lastUsedAt: now })
+        await this.recordUse(global, id, globalBlock, now)
         continue
       }
       if (project !== undefined) {
         const block = project.get(id)
-        if (block !== undefined) await project.put(id, { ...block, lastUsedAt: now })
+        if (block !== undefined) await this.recordUse(project, id, block, now)
       }
     }
+  }
+
+  /**
+   * 命中记账 + 自动升级（2026-09-15 静默记忆机制）：命中次数达阈值即自动打开常驻
+   * 注入——「被反复检索命中」是它值得每轮付费的唯一客观证据。统计性字段不 emit，
+   * 只有真的改变了注入状态才发 `memory/changed`。
+   */
+  private async recordUse(
+    table: KvTable<string, StoredBlock>,
+    id: MemoryId,
+    block: StoredBlock,
+    now: number,
+  ): Promise<void> {
+    const hitCount = (block.hitCount ?? 0) + 1
+    const normalized = normalizeBlock(block)
+    // 人工设置过的（injectedAuto === false）双向豁免：既不被降级，也不被升级。
+    // 少了这一条，人手动关掉的记忆会在下次命中时被系统重新打开——用户唯一能
+    // 表达「不要这条常驻」的动作就失效了，而这与降级侧「人工决定优先」不对称。
+    const promote = normalized.status === 'approved'
+      && block.quarantined !== true
+      && block.injectedAuto !== false
+      // 模板永不注入（0.6.0）：prompt 记录连自动升级的资格都没有。少了这一条，
+      // 模板会因「经常被搜到」而升成常驻，把注入预算花在从不该进上下文的东西上。
+      && (block.kind ?? 'fact') !== 'prompt'
+      && !normalized.injected
+      && hitCount >= AUTO_INJECT_HITS
+    const updated: StoredBlock = {
+      ...block,
+      hitCount,
+      lastUsedAt: now,
+      ...promote ? { injected: true, injectedAuto: true } : {},
+    }
+    await table.put(id, updated)
+    if (promote) this.ctx.emit('memory/changed', { operation: 'injected', id, injected: true })
+  }
+
+  // ── 查询日志与影响力统计（⑥ 2026-09-15）────────────────────────────────
+  /** 查询日志（惰性创建；位置见 {@link queryLogPath}）。 */
+  private queryLogInstance?: QueryLog
+
+  private queryLog(): QueryLog {
+    this.queryLogInstance ??= new QueryLog({ path: this.queryLogPath() })
+    return this.queryLogInstance
+  }
+
+  /** 查询日志文件路径：与 `memory.json` 同目录（不落子目录）。 */
+  private queryLogPath(): string {
+    return this.config.queryLogPath ?? join(this.config.globalRoot ?? globalRoot(), 'query-log.json')
+  }
+
+  /**
+   * 记录一次检索：查询文本（截断到 120 字符）+ 命中条数 + 时间。**失败绝不影响检索**——
+   * 日志是旁路证据，不是检索的一部分。模板库检索不进日志：`prompt_search` 复用同一条
+   * `search` 通道，但模板是文件库、不属于「记忆漏检」的观察面。
+   *
+   * 查询文本是新的明文落盘点，因此先过危险内容硬拦（与写入路径同一套规则）：命中就只记
+   * 规则名、不留原文——凭据不该因为「只是被搜了一下」而进另一个明文文件。
+   */
+  private recordQuery(query: string, hits: number, filter?: MemoryFilter): void {
+    if (filter?.kind === 'prompt') return
+    try {
+      const verdict = detectSensitive(query)
+      this.queryLog().appendQuery(verdict.quarantined
+        ? { query: `[已脱敏：命中 ${verdict.reason ?? 'dangerous-content'}]`, hits }
+        : { query, hits })
+    } catch (error) {
+      this.ctx.logger?.warn?.(`dsh-memory: 查询日志写入跳过：${String(error)}`)
+    }
+  }
+
+  /**
+   * 影响力统计（⑥ / 反例 5）：按来源聚合「写入量 / 被检索命中数 / 常驻注入数」。
+   * 只算 fact 记录（模板索引不是记忆），隔离记录不计（与 list 的默认口径一致：
+   * 它们不在流通里）。「被人工删除数」暂缺的原因见 `summarizeSources` 的注释。
+   */
+  async sourceStats(projectCwd?: string): Promise<SourceStat[]> {
+    const records = await this.list({ kind: 'fact' }, projectCwd)
+    return summarizeSources(records.map(record => ({
+      ...record.source === undefined ? {} : { source: record.source },
+      hitCount: record.hitCount,
+      injected: record.injected,
+    })))
+  }
+
+  /**
+   * 低频反查（⑥，**只产出报告，不自动改写**）：拿「命中 0 的查询」与既有记忆反查，
+   * 给出「本应命中却没命中」的候选，供人工或模型补 keywords。
+   *
+   * 不做自动补写：判断「这条记忆是否真该被那个查询找到」需要 LLM 语义判断，插件只提供
+   * 证据（候选为空即知识缺口——「这类知识你还没有」本身也是有用信息）。调用时机由人
+   * 或模型定，不在检索路径上、不产生每轮成本。
+   *
+   * @param projectCwd - 会话工作区；候选库连工作区记忆一起取。
+   * @param limit - 最多反查几个空命中查询（按最近出现排序）。
+   */
+  async suggestKeywordGaps(projectCwd?: string, limit = 10): Promise<KeywordGapReport> {
+    const summary = summarizeQueryLog(this.queryLog().readLog(), limit)
+    if (summary.gaps.length === 0) return { logSize: summary.total, misses: summary.misses, gaps: [] }
+    const records = await this.list({ kind: 'fact' }, projectCwd)
+    const byId = new Map(records.map(record => [String(record.id), record]))
+    const docs = records.map(record => ({
+      id: String(record.id),
+      body: record.content,
+      tags: record.keywords.join(' '),
+    }))
+    return {
+      logSize: summary.total,
+      misses: summary.misses,
+      gaps: summary.gaps.map(gap => ({
+        query: gap.query,
+        count: gap.count,
+        lastAt: gap.lastAt,
+        candidates: rankGapCandidates(gap.query, docs).flatMap(candidate => {
+          const record = byId.get(candidate.id)
+          return record === undefined ? [] : [{
+            id: candidate.id,
+            excerpt: record.content.slice(0, GAP_EXCERPT_CHARS),
+            keywords: record.keywords,
+            exact: candidate.exact,
+            relaxed: candidate.relaxed,
+          }]
+        }),
+      })),
+    }
+  }
+
+  /**
+   * 长期未命中的自动降级（2026-09-15 淘汰机制）：**只撤自动开的常驻注入**——人工开
+   * 的开关不会被时间悄悄关掉（那是人的决定，不是信号的结论）。判定用 lastUsedAt，
+   * 从未命中过则回退 updatedAt。会话启动时调一次即可（见 index.ts 的预热路径）。
+   *
+   * @param projectCwd - 会话工作区；给了就连工作区表一起扫。
+   * @param now - 当前时间（测试注入用）。
+   * @returns 被撤下的条数（诊断与日志用）。
+   */
+  async demoteStale(projectCwd?: string, now = Date.now()): Promise<number> {
+    const threshold = now - AUTO_DEMOTE_DAYS * 24 * 60 * 60 * 1000
+    const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
+    if (projectCwd !== undefined && projectCwd !== '') {
+      const project = await this.projectTableFor(projectCwd)
+      if (project !== undefined) tables.push(project)
+    }
+    let demoted = 0
+    for (const table of tables) {
+      // 先快照键值对：put 会改到底层 Map，边遍历边写不安全
+      for (const [id, block] of [...table.entries()]) {
+        if (block.injectedAuto !== true) continue
+        if (block.quarantined === true) continue
+        if (normalizeBlock(block).status !== 'approved') continue
+        const last = block.lastUsedAt ?? block.updatedAt
+        if (last > threshold) continue
+        await table.put(id, { ...block, injected: false, injectedAuto: false })
+        this.ctx.emit('memory/changed', { operation: 'injected', id: MemoryId(id), injected: false })
+        demoted += 1
+      }
+    }
+    return demoted
+  }
+
+  /**
+   * 锚点批量校验（2026-09-15）：会话启动时调一次，把失效的条目标成 `stale`。
+   *
+   * 失效同时**撤掉常驻注入**——内容可能已经错了，继续每轮注入就是在误导（反例 2 的
+   * 教训）；但**不删除、也不排除检索**，它在结果里带标注，等模型核对后回写。
+   * 探测不到（`undefined`）按「未校验」处理，不动任何状态。
+   *
+   * @param probes - 探测上下文（工具清单 / 自身版本 / env 读取器）。
+   * @param projectCwd - 会话工作区；给了就连工作区表一起校验。
+   * @returns 本次状态发生变化的条数。
+   */
+  async verifyAnchors(probes: AnchorProbes, projectCwd?: string): Promise<number> {
+    const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
+    if (projectCwd !== undefined && projectCwd !== '') {
+      const project = await this.projectTableFor(projectCwd)
+      if (project !== undefined) tables.push(project)
+    }
+    let changed = 0
+    for (const table of tables) {
+      for (const [id, block] of [...table.entries()]) {
+        if (block.anchor === undefined) continue
+        const holds = anchorHolds(block.anchor, probes)
+        if (holds === undefined) continue          // 未校验：探测不到就不动
+        if ((block.stale === true) === !holds) continue   // 状态没变
+        const label = `${block.anchor.kind}${block.anchor.name === undefined ? '' : `:${block.anchor.name}`}`
+        const updated: StoredBlock = holds
+          ? { ...block, stale: false, staleReason: undefined }
+          : {
+              ...block,
+              stale: true,
+              staleReason: `${label} 声明为 ${block.anchor.value}，当前不符`,
+              injected: false,
+              injectedAuto: false,
+            }
+        await table.put(id, updated)
+        this.ctx.emit('memory/changed', { operation: 'status', id: MemoryId(id), status: normalizeBlock(updated).status })
+        changed += 1
+      }
+    }
+    return changed
+  }
+
+  /**
+   * 旧数据迁移（2026-09-15 静默记忆机制）：一次性、幂等，会话启动维护时调用。
+   *
+   * 旧语义里 `suggested` 是「等人工审核」，新语义里它只剩「隔离」与「人工回退」两种含义——
+   * 不迁移的话那些记录会永久卡住：既不注入，也没人去放行。迁移逐条过危险内容检测：
+   * 安全则升 `approved`（写入即生效），命中则标 `quarantined` 进隔离（**必须先检测再放行**：
+   * 历史条目若含密钥，直接放行等于让它开始进注入）。
+   *
+   * 另外把「有 `lastUsedAt` 但无 `hitCount`」的老记录回填 `hitCount = 1`——它们可能早已被
+   * 反复用过，不该从零开始攒两次命中。旧 `injected: true` 且无 `injectedAuto` 的一律不动：
+   * 那是人工决定，不该被自动降级。
+   *
+   * @param projectCwd - 会话工作区；给了就连工作区表一起迁移。
+   * @returns 迁移统计（放行 / 隔离 / 回填计数）。
+   */
+  async migrateLegacy(projectCwd?: string): Promise<{ approved: number, quarantined: number, counted: number }> {
+    const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
+    if (projectCwd !== undefined && projectCwd !== '') {
+      const project = await this.projectTableFor(projectCwd)
+      if (project !== undefined) tables.push(project)
+    }
+    const stats = { approved: 0, quarantined: 0, counted: 0 }
+    // 幂等：先判断是否真的有事可做——没有就直接返回，连备份都不做（否则每天首次启动
+    // 都会留下一份无意义的 .bak）
+    const needsMigration = tables.some(table => [...table.entries()].some(([, block]) => {
+      const normalized = normalizeBlock(block)
+      if (normalized.status === 'suggested' && block.quarantined !== true) return true
+      return block.hitCount === undefined && block.lastUsedAt !== undefined
+    }))
+    if (!needsMigration) return stats
+    // 迁移前备份全局存储（工作区记忆随 git 分享，有 git 兜底）。备份失败只记日志、不阻断：
+    // 迁移本身就是幂等的，最坏情况是重复跑一次。
+    try {
+      const file = join(this.config.globalRoot ?? globalRoot(), 'memory.json')
+      if (existsSync(file)) {
+        const backup = `${file}.bak-${new Date().toISOString().slice(0, 10)}-migration`
+        if (!existsSync(backup)) writeFileSync(backup, readFileSync(file))
+      }
+    } catch (error) {
+      this.ctx.logger?.warn?.(`dsh-memory: migration backup skipped: ${String(error)}`)
+    }
+    for (const table of tables) {
+      for (const [id, block] of [...table.entries()]) {
+        const normalized = normalizeBlock(block)
+        let updated: StoredBlock | undefined
+        // ① 旧的 suggested：安全则放行、危险则隔离
+        if (normalized.status === 'suggested' && block.quarantined !== true) {
+          const verdict = detectSensitive(block.content, ...block.keywords)
+          if (verdict.quarantined) {
+            updated = {
+              ...block,
+              status: 'suggested',
+              injected: false,
+              quarantined: true,
+              ...verdict.reason === undefined ? {} : { quarantineReason: verdict.reason },
+            }
+            stats.quarantined += 1
+          } else {
+            updated = { ...block, status: 'approved', injected: normalized.injected }
+            stats.approved += 1
+          }
+        }
+        // ② 命中计数回填（在 ① 的结果之上叠加，避免两次 put 互相覆盖）
+        const base = updated ?? block
+        if (base.hitCount === undefined && base.lastUsedAt !== undefined) {
+          updated = { ...base, hitCount: 1 }
+          stats.counted += 1
+        }
+        if (updated !== undefined) await table.put(id, updated)
+      }
+    }
+    return stats
   }
 
   async forget(id: MemoryId, projectCwd?: string): Promise<boolean> {
@@ -542,6 +1031,8 @@ export class MemoryEngine extends Service {
         status,
         // 旧数据可能缺 injected，写回时补全（读时迁移值）
         injected: normalizeBlock(global).injected,
+        // 人工放行 = 审核通过并解除隔离（2026-09-15）
+        ...status === 'approved' ? { quarantined: false, quarantineReason: undefined } : {},
         updatedAt: Date.now(),
       }
       await this.requireTable('global').put(id, updated)
@@ -557,6 +1048,7 @@ export class MemoryEngine extends Service {
           ...block,
           status,
           injected: normalizeBlock(block).injected,
+          ...status === 'approved' ? { quarantined: false, quarantineReason: undefined } : {},
           updatedAt: Date.now(),
         }
         await project.put(id, updated)
@@ -589,10 +1081,16 @@ export class MemoryEngine extends Service {
     if ((found.block.kind ?? 'fact') === 'prompt') {
       throw new Error(`cannot set injected of prompt record '${id}': prompt templates are never injected`)
     }
+    // 隔离记录不可注入（2026-09-15）：先放行（setStatus approved）再开开关
+    if (injected && found.block.quarantined === true) {
+      throw new Error(`cannot inject quarantined memory '${id}': approve it first`)
+    }
     const updated: StoredBlock = {
       ...found.block,
       status: normalizeBlock(found.block).status,
       injected,
+      // 人工设置过即接管：此后既不被「长期未命中」自动降级，也不被「反复命中」自动升级（2026-09-15）
+      injectedAuto: false,
       updatedAt: Date.now(),
     }
     await found.table.put(id, updated)
@@ -602,19 +1100,28 @@ export class MemoryEngine extends Service {
   }
 
   /**
-   * 修改一条记忆的内容/关键词（0.3.1 整理记忆用）。内容被模型改动后
-   * 必须重新人工审核：status 重置为 suggested（自然停止注入——注入仅对
-   * approved 生效）；injected 保留原值（审核通过后注入开关原样恢复）。
+   * 修改一条记忆的内容/关键词（0.3.1 整理记忆用）。2026-09-15 起：改动**不再**
+   * 退回待审核——静默机制下记忆由系统与模型自行维护，更新即保持原有审核状态；
+   * `injected` 保留原值。若新内容命中危险规则则转为隔离（与写入路径同一判定）。
    */
   async update(id: MemoryId, patch: { content?: string, keywords?: string[] }, projectCwd?: string): Promise<MemoryRecord> {
     const applyPatch = (block: StoredBlock): StoredBlock => {
       const normalized = normalizeBlock(block)
+      const content = patch.content ?? block.content
+      const keywords = patch.keywords === undefined
+        ? block.keywords
+        : patch.keywords.map(keyword => keyword.toLowerCase())
+      const verdict = detectSensitive(content, ...keywords)
       return {
         ...block,
-        status: 'suggested',
+        // 命中危险规则：退回 suggested（不注入）+ 隔离（不检索）双保险；否则保持原状态
+        status: verdict.quarantined ? 'suggested' : normalized.status,
         injected: normalized.injected,
+        ...verdict.quarantined
+          ? { quarantined: true, ...verdict.reason === undefined ? {} : { quarantineReason: verdict.reason } }
+          : { quarantined: false, quarantineReason: undefined },
         ...(patch.content === undefined ? {} : { content: patch.content }),
-        ...(patch.keywords === undefined ? {} : { keywords: patch.keywords.map(keyword => keyword.toLowerCase()) }),
+        ...(patch.keywords === undefined ? {} : { keywords }),
         updatedAt: Date.now(),
       }
     }
@@ -623,7 +1130,7 @@ export class MemoryEngine extends Service {
       const updated = applyPatch(global)
       await this.requireTable('global').put(id, updated)
       const record = toRecord(id, updated)
-      this.ctx.emit('memory/changed', { operation: 'status', id, status: 'suggested' })
+      this.ctx.emit('memory/changed', { operation: 'status', id, status: normalizeBlock(updated).status })
       return record
     }
     const project = await this.projectTableFor(projectCwd)
@@ -633,7 +1140,7 @@ export class MemoryEngine extends Service {
         const updated = applyPatch(block)
         await project.put(id, updated)
         const record = toRecord(id, updated)
-        this.ctx.emit('memory/changed', { operation: 'status', id, status: 'suggested' })
+        this.ctx.emit('memory/changed', { operation: 'status', id, status: normalizeBlock(updated).status })
         return record
       }
     }
@@ -649,6 +1156,8 @@ export class MemoryEngine extends Service {
     const key = join(projectCwd)
     if (this.projectTables.has(key)) return
     await this.projectTableFor(key)
+    // 会话内首次打开工作区表时做一次启动维护（迁移 / 降级 / 锚点校验，2026-09-15）
+    await this.runMaintenanceOnce(projectCwd)
   }
 
   /**
@@ -660,7 +1169,11 @@ export class MemoryEngine extends Service {
    */
   recallRecords(projectCwd?: string): MemoryRecord[] {
     const injected = (table: KvTable<string, StoredBlock>): MemoryRecord[] =>
-      this.recordsOf(table).filter(record => record.status === 'approved' && record.injected)
+      // 模板永不注入（0.6.0）：这一条是兜底——即使存储里出现被标了 injected 的 prompt
+      // 记录（旧版本或人工改文件留下的），也不让它进上下文。
+      this.recordsOf(table).filter(record => record.status === 'approved'
+        && record.injected
+        && (record.kind ?? 'fact') !== 'prompt')
     const global = injected(this.requireTable('global'))
     if (projectCwd === undefined || projectCwd === '') return global
     const project = this.projectTables.get(join(projectCwd))
