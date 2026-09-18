@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
@@ -115,6 +115,12 @@ export interface MemoryWrite {
    * 失效。只用于「随环境变化的事实」（某工具版本下的行为、某环境变量决定的配置）。
    */
   anchor?: MemoryAnchor
+  /**
+   * 常驻注入（可选，2026-09-18）：显式指定这条记忆是否每轮进上下文。**给值即接管**——
+   * 与 {@link MemoryEngine.setInjected} 同一套语义（写 `injectedAuto: false`，此后不受自动
+   * 升降影响）。省略则维持缺省行为：不注入，且**保留**「被反复命中即自动升常驻」的资格。
+   */
+  injected?: boolean
 }
 
 export interface MemoryFilter {
@@ -125,6 +131,17 @@ export interface MemoryFilter {
   quarantined?: boolean
   /** 记录类别过滤（0.6.0）；缺省不过滤（工具层显式传 kind='fact' 保持旧行为）。 */
   kind?: MemoryKind
+}
+
+/** {@link MemoryEngine.update} 的补丁：省略的字段保持原值（`injected` 省略时连 `injectedAuto` 一起保持）。 */
+export interface MemoryPatch {
+  content?: string
+  keywords?: string[]
+  /**
+   * 常驻注入（2026-09-18）：给值即接管，与 {@link MemoryEngine.setInjected} 同义（写
+   * `injectedAuto: false`，此后不受自动升降影响）；省略则保持原值。
+   */
+  injected?: boolean
 }
 
 export interface MemoryHit {
@@ -411,10 +428,16 @@ export class MemoryEngine extends Service {
   private globalTable?: KvTable<string, StoredBlock>
   /** project 域按工作区 cwd 懒打开 + 缓存（多会话并发各工作区独立）。 */
   private projectTables = new Map<string, KvTable<string, StoredBlock>>()
+  /** 进行中的工作区打开（key → promise）：并发调用复用同一次，见 {@link projectTableFor}。 */
+  private readonly projectOpenings = new Map<string, Promise<KvTable<string, StoredBlock>>>()
   private projectFacilities = new Map<string, DomainFacility>()
   /** backend 只注册一次（registry 重名抛 duplicate；reload 清缓存后不得重复注册）。 */
   private registeredProjectBackends = new Set<string>()
   private facility?: DomainFacility
+  /** 各存储文件上次被我们确认过的指纹；用于识别「另一个实例写过」。 */
+  private readonly storeStamps = new Map<string, string>()
+  /** 写入串行链：「刷新—读—改—写」必须整体互斥，否则并发写会在其间穿插。 */
+  private writeChain: Promise<unknown> = Promise.resolve()
   /** 会话启动维护只跑一次的标记（2026-09-15）。 */
   private maintenanceDone = false
 
@@ -456,14 +479,42 @@ export class MemoryEngine extends Service {
   }
 
   /**
+   * 工作区表是否已经打开（同步判断）。组装路径用它决定「要不要等一次预热」——
+   * 表已打开是常态，那时这条路径不该付出任何异步代价。
+   */
+  projectOpen(projectCwd?: string): boolean {
+    if (projectCwd === undefined || projectCwd === '') return false
+    return this.projectTables.has(join(projectCwd))
+  }
+
+  /**
    * 按工作区 cwd 取 project 表（懒打开 + 缓存）。无 cwd（未选工作区）
    * 返回 undefined——调用方（工具/面板）按此跳过 project 部分。
+   *
+   * **打开是异步的，调用方却会并发**：预热是 fire-and-forget，注入路径、工具路径、
+   * 面板路径各来一次。底层 unit 句柄只允许一个，两次并发打开会让后到者以
+   * `unit '…' is already open; a unit has exactly one live handle` 失败——而调用方
+   * 普遍把预热失败当无碍吞掉，于是表现为「这一轮工作区记忆缺席」。所以这里复用
+   * 进行中的那次打开。
    */
   private async projectTableFor(projectCwd?: string): Promise<KvTable<string, StoredBlock> | undefined> {
     if (projectCwd === undefined || projectCwd === '') return undefined
     const key = join(projectCwd) // 规范化（Windows 大小写/尾斜杠）
     const cached = this.projectTables.get(key)
     if (cached !== undefined) return cached
+    const inFlight = this.projectOpenings.get(key)
+    if (inFlight !== undefined) return await inFlight
+    const opening = this.openProjectTable(key)
+    this.projectOpenings.set(key, opening)
+    try {
+      return await opening
+    } finally {
+      this.projectOpenings.delete(key)
+    }
+  }
+
+  /** {@link projectTableFor} 的实际打开步骤；并发去重由调用方负责。 */
+  private async openProjectTable(key: string): Promise<KvTable<string, StoredBlock>> {
     const backendName = this.projectBackendName(key)
     // 0.5.2：旧实现 domain 名多一层 memory_project_ 前缀（文件名双重前缀，
     // 且 unit 文件头 name 同为旧名）。打开前统一迁移到规范名：
@@ -502,14 +553,29 @@ export class MemoryEngine extends Service {
   /**
    * 强制重载存储：关闭全局域与全部已开工作区域后重开（unit 释放后
    * backend 重读文件），放弃内存缓存。供外部编辑记忆文件后刷新
-   * （JsonStorageBackend 打开时加载一次，无 watch——2026-08-19 实测）。
+   * （JsonStorageBackend 打开时加载一次，无 watch——2026-08-19 实测）；
+   * 多实例写入协调（0.7.1）让它在每次「磁盘被别人改过」时自动触发。
+   *
+   * **已打开的工作区要重开，而不是一关了之**：注入 provider 是同步回调、只读
+   * 已打开的表，关掉就等同于「这个工作区没有常驻记忆」——工作区记忆会从上下文里
+   * 静默消失，直到某次工具调用把它重新打开。重开的表同样从磁盘重读，
+   * 「放弃内存缓存」这条语义不变，改变的只是「重读完别忘了装回去」。
    */
   async reload(): Promise<void> {
+    // 进行中的打开先落地：否则它们会在下面的 clear 之后把表塞回已清空的映射，
+    // 留下「表在映射里但 facility 已关」的半死状态。
+    await Promise.allSettled([...this.projectOpenings.values()])
+    const opened = [...this.projectTables.keys()]
     await this.facility?.closeAll()
     for (const facility of this.projectFacilities.values()) await facility.closeAll()
     this.projectTables.clear()
     this.projectFacilities.clear()
     await this.openGlobalFacility()
+    for (const key of opened) {
+      // 重开失败 = 该工作区退回「未打开」（本轮注入缺这部分，下次访问重试），
+      // 不该让触发重载的那一整次写入跟着失败。
+      await this.projectTableFor(key).catch(() => undefined)
+    }
   }
 
   /**
@@ -517,7 +583,91 @@ export class MemoryEngine extends Service {
    * 命中危险内容规则则隔离：`status` 留 `suggested`（天然不注入）**并且**置
    * `quarantined`（不进检索），双保险，等待人工放行或删除。
    */
+  // ── 多实例写入协调（2026-09-17）────────────────────────────────────────
+  //
+  // 另一个 DSH 实例（web 与 SSiD 同时运行）共用同一个 DSH_HOME 时，它写的记忆只落在
+  // 磁盘上；我们的内存态若比磁盘旧，下一次整份覆盖就会把对方的新记忆抹掉。DSH 的
+  // 存储层明确不做跨进程协调（storage-json「writer per process and last-write-wins
+  // is correct」、storage-sqlite「cross-process coordination is out of scope」），
+  // 所以协调放在这里：开写前比对存储文件指纹，变过就重载——等价于「update 前先
+  // select」。残余窗口只剩两个实例真正同时写，而记忆写入是低频操作。
+
+  /** 文件指纹：mtime + size（size 兜住同一毫秒内的两次写）。 */
+  private static fileStamp(file: string): string {
+    try {
+      const stat = statSync(file)
+      return `${stat.mtimeMs}:${stat.size}`
+    } catch {
+      return 'missing'
+    }
+  }
+
+  /** 全局记忆的存储文件（JsonStorageBackend 的 unit 文件名 = domain 名）。 */
+  private globalStoreFile(): string {
+    return join(this.config.globalRoot ?? globalRoot(), 'memory.json')
+  }
+
+  /** 某工作区记忆的存储文件。 */
+  private projectStoreFile(projectCwd: string): string {
+    const key = join(projectCwd)
+    return join(this.projectRootFor(key), `${this.projectBackendName(key)}.json`)
+  }
+
+  /** 记录当前指纹，作为「这就是我们造成的状态」的基准（写入完成后调用）。 */
+  private noteStoreStamps(projectCwd?: string): void {
+    const global = this.globalStoreFile()
+    this.storeStamps.set(global, MemoryEngine.fileStamp(global))
+    const scopes = new Set(this.projectTables.keys())
+    if (projectCwd !== undefined && projectCwd !== '') scopes.add(join(projectCwd))
+    for (const key of scopes) {
+      const file = this.projectStoreFile(key)
+      this.storeStamps.set(file, MemoryEngine.fileStamp(file))
+    }
+  }
+
+  /**
+   * 写前新鲜度门：存储文件被外部改过就重载，避免整份覆盖吃掉对方的写入。
+   * 必须在取表**之前**调用——{@link reload} 重开 facility，此前取到的 table 引用会失效。
+   */
+  private async refreshForWrite(projectCwd?: string): Promise<void> {
+    if (this.storeStamps.size === 0) {
+      this.noteStoreStamps(projectCwd)
+      return
+    }
+    const files = [this.globalStoreFile()]
+    if (projectCwd !== undefined && projectCwd !== '') files.push(this.projectStoreFile(projectCwd))
+    for (const file of files) {
+      if (MemoryEngine.fileStamp(file) === this.storeStamps.get(file)) continue
+      await this.reload()
+      this.noteStoreStamps(projectCwd)
+      return
+    }
+  }
+
+  /**
+   * 一次写入的完整作用域：串行化 → 新鲜度门 → 执行 → 记指纹。
+   * 刷新与「读—改—写」必须同处一个互斥区，否则并发写会在两者之间穿插。
+   * @param projectCwd - 本次写入涉及的工作区；无则只覆盖全局存储。
+   * @param run - 实际的读改写；必须在内部重新取表（刷新后旧引用失效）。
+   * @returns `run` 的返回值。
+   */
+  private writeScope<T>(projectCwd: string | undefined, run: () => Promise<T>): Promise<T> {
+    const task = this.writeChain.then(async () => {
+      await this.refreshForWrite(projectCwd)
+      const result = await run()
+      this.noteStoreStamps(projectCwd)
+      return result
+    })
+    this.writeChain = task.then(() => undefined, () => undefined)
+    return task
+  }
+
   async remember(input: MemoryWrite, projectCwd?: string): Promise<MemoryRecord> {
+    return this.writeScope(projectCwd, () => this.rememberInner(input, projectCwd))
+  }
+
+  /** {@link remember} 的实现体；必须经 `writeScope` 进入（多实例写入协调）。 */
+  private async rememberInner(input: MemoryWrite, projectCwd?: string): Promise<MemoryRecord> {
     const namespace = input.namespace ?? 'global'
     const table = namespace === 'project'
       ? await this.projectTableFor(projectCwd)
@@ -530,13 +680,16 @@ export class MemoryEngine extends Service {
     const block: StoredBlock = {
       namespace,
       status: verdict.quarantined ? 'suggested' : 'approved',
-      injected: false,
+      // 常驻注入（2026-09-18）：显式给值即接管；隔离内容一律不注入
+      injected: verdict.quarantined ? false : input.injected ?? false,
       content: input.content,
       keywords: (input.keywords ?? []).map(keyword => keyword.toLowerCase()),
       createdAt: now,
       updatedAt: now,
       // ⑧ 来源（2026-09-15）：缺省 'agent'——写入这条记忆的就是主模型
       source: input.source ?? 'agent',
+      // 显式指定注入即接管：此后既不被自动降级，也不被自动升级（同 setInjected，2026-09-18）
+      ...input.injected === undefined ? {} : { injectedAuto: false },
       // 有效性锚点（可选）：值变了这条记忆会被标 stale，不再被当成仍然正确
       ...input.anchor === undefined ? {} : { anchor: input.anchor },
       ...verdict.quarantined
@@ -718,12 +871,17 @@ export class MemoryEngine extends Service {
 
   /** 命中标记：写回 lastUsedAt 与命中次数，达标即自动升常驻（2026-09-15）。 */
   private async markUsed(ids: MemoryId[], projectCwd?: string): Promise<void> {
+    return this.writeScope(projectCwd, () => this.markUsedInner(ids, projectCwd))
+  }
+
+  /** {@link markUsed} 的实现体；必须经 `writeScope` 进入（`recordUse` 在此之内）。 */
+  private async markUsedInner(ids: MemoryId[], projectCwd?: string): Promise<void> {
     if (ids.length === 0) return
     const now = Date.now()
     const global = this.requireTable('global')
-    const project = projectCwd === undefined || projectCwd === ''
-      ? undefined
-      : this.projectTables.get(join(projectCwd))
+    // 取表走异步版：`writeScope` 可能在本次进入前刚 `reload()`（外部实例改过存储），
+    // 那时同步缓存已被清空——继续读缓存会把 project 侧的命中静默漏记。
+    const project = await this.projectTableFor(projectCwd)
     for (const id of ids) {
       const globalBlock = global.get(id)
       if (globalBlock !== undefined) {
@@ -871,6 +1029,11 @@ export class MemoryEngine extends Service {
    * @returns 被撤下的条数（诊断与日志用）。
    */
   async demoteStale(projectCwd?: string, now = Date.now()): Promise<number> {
+    return this.writeScope(projectCwd, () => this.demoteStaleInner(projectCwd, now))
+  }
+
+  /** {@link demoteStale} 的实现体；必须经 `writeScope` 进入。 */
+  private async demoteStaleInner(projectCwd?: string, now = Date.now()): Promise<number> {
     const threshold = now - AUTO_DEMOTE_DAYS * 24 * 60 * 60 * 1000
     const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
     if (projectCwd !== undefined && projectCwd !== '') {
@@ -906,6 +1069,11 @@ export class MemoryEngine extends Service {
    * @returns 本次状态发生变化的条数。
    */
   async verifyAnchors(probes: AnchorProbes, projectCwd?: string): Promise<number> {
+    return this.writeScope(projectCwd, () => this.verifyAnchorsInner(probes, projectCwd))
+  }
+
+  /** {@link verifyAnchors} 的实现体；必须经 `writeScope` 进入。 */
+  private async verifyAnchorsInner(probes: AnchorProbes, projectCwd?: string): Promise<number> {
     const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
     if (projectCwd !== undefined && projectCwd !== '') {
       const project = await this.projectTableFor(projectCwd)
@@ -952,6 +1120,11 @@ export class MemoryEngine extends Service {
    * @returns 迁移统计（放行 / 隔离 / 回填计数）。
    */
   async migrateLegacy(projectCwd?: string): Promise<{ approved: number, quarantined: number, counted: number }> {
+    return this.writeScope(projectCwd, () => this.migrateLegacyInner(projectCwd))
+  }
+
+  /** {@link migrateLegacy} 的实现体；必须经 `writeScope` 进入。 */
+  private async migrateLegacyInner(projectCwd?: string): Promise<{ approved: number, quarantined: number, counted: number }> {
     const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
     if (projectCwd !== undefined && projectCwd !== '') {
       const project = await this.projectTableFor(projectCwd)
@@ -1011,6 +1184,11 @@ export class MemoryEngine extends Service {
   }
 
   async forget(id: MemoryId, projectCwd?: string): Promise<boolean> {
+    return this.writeScope(projectCwd, () => this.forgetInner(id, projectCwd))
+  }
+
+  /** {@link forget} 的实现体；必须经 `writeScope` 进入。 */
+  private async forgetInner(id: MemoryId, projectCwd?: string): Promise<boolean> {
     if (await this.requireTable('global').delete(id)) {
       this.ctx.emit('memory/changed', { operation: 'forgotten', id })
       return true
@@ -1024,6 +1202,11 @@ export class MemoryEngine extends Service {
   }
 
   async setStatus(id: MemoryId, status: MemoryStatus, projectCwd?: string): Promise<MemoryRecord> {
+    return this.writeScope(projectCwd, () => this.setStatusInner(id, status, projectCwd))
+  }
+
+  /** {@link setStatus} 的实现体；必须经 `writeScope` 进入。 */
+  private async setStatusInner(id: MemoryId, status: MemoryStatus, projectCwd?: string): Promise<MemoryRecord> {
     const global = this.requireTable('global').get(id)
     if (global !== undefined) {
       const updated: StoredBlock = {
@@ -1061,10 +1244,18 @@ export class MemoryEngine extends Service {
   }
 
   /**
-   * 注入维度开关（0.3.0）：只改 injected，不动审核状态。供 UI 面板
-   * 「常驻注入」开关调用（remote.setInjected）。
+   * 注入维度开关（0.3.0）：只改 injected，不动审核状态。供 UI 面板「常驻注入」开关调用
+   * （remote.setInjected）。2026-09-18 起模型侧有等价路径——`memory_save` / `memory_update`
+   * 的 `injected` 参数，经 {@link remember} / {@link update} 写同一套 `injectedAuto: false`
+   * 语义。差异只在越界处理：本方法对隔离记录**抛错**（用户明确要开，该被告知），
+   * 而写入/更新路径**静默降级为不注入**（那是顺带设置，不该中断整次写入）。
    */
   async setInjected(id: MemoryId, injected: boolean, projectCwd?: string): Promise<MemoryRecord> {
+    return this.writeScope(projectCwd, () => this.setInjectedInner(id, injected, projectCwd))
+  }
+
+  /** {@link setInjected} 的实现体；必须经 `writeScope` 进入。 */
+  private async setInjectedInner(id: MemoryId, injected: boolean, projectCwd?: string): Promise<MemoryRecord> {
     const locate = async (): Promise<{ table: KvTable<string, StoredBlock>, block: StoredBlock } | undefined> => {
       const global = this.requireTable('global').get(id)
       if (global !== undefined) return { table: this.requireTable('global'), block: global }
@@ -1100,11 +1291,17 @@ export class MemoryEngine extends Service {
   }
 
   /**
-   * 修改一条记忆的内容/关键词（0.3.1 整理记忆用）。2026-09-15 起：改动**不再**
-   * 退回待审核——静默机制下记忆由系统与模型自行维护，更新即保持原有审核状态；
-   * `injected` 保留原值。若新内容命中危险规则则转为隔离（与写入路径同一判定）。
+   * 修改一条记忆的内容/关键词/注入位（0.3.1 整理记忆用）。2026-09-15 起：改动**不再**
+   * 退回待审核——静默机制下记忆由系统与模型自行维护，更新即保持原有审核状态。2026-09-18
+   * 起可改 `injected`：**省略则保留原值**（连 `injectedAuto` 一起不动），给值即接管。若新
+   * 内容命中危险规则则转为隔离（与写入路径同一判定），并连带撤下注入。
    */
-  async update(id: MemoryId, patch: { content?: string, keywords?: string[] }, projectCwd?: string): Promise<MemoryRecord> {
+  async update(id: MemoryId, patch: MemoryPatch, projectCwd?: string): Promise<MemoryRecord> {
+    return this.writeScope(projectCwd, () => this.updateInner(id, patch, projectCwd))
+  }
+
+  /** {@link update} 的实现体；必须经 `writeScope` 进入。 */
+  private async updateInner(id: MemoryId, patch: MemoryPatch, projectCwd?: string): Promise<MemoryRecord> {
     const applyPatch = (block: StoredBlock): StoredBlock => {
       const normalized = normalizeBlock(block)
       const content = patch.content ?? block.content
@@ -1112,11 +1309,16 @@ export class MemoryEngine extends Service {
         ? block.keywords
         : patch.keywords.map(keyword => keyword.toLowerCase())
       const verdict = detectSensitive(content, ...keywords)
+      // 命中危险规则：退回 suggested（不注入）+ 隔离（不检索）双保险；否则保持原状态
+      const status = verdict.quarantined ? 'suggested' : normalized.status
+      // 常驻注入（2026-09-18）：显式给值即接管；未审核或已隔离一律不注入（与自动升级同一门槛）
+      const injected = status === 'approved' ? patch.injected ?? normalized.injected : false
       return {
         ...block,
-        // 命中危险规则：退回 suggested（不注入）+ 隔离（不检索）双保险；否则保持原状态
-        status: verdict.quarantined ? 'suggested' : normalized.status,
-        injected: normalized.injected,
+        status,
+        injected,
+        // 显式改注入即视为有意决定：此后不受自动升降影响（省略时连 injectedAuto 一起保持）
+        ...patch.injected === undefined ? {} : { injectedAuto: false },
         ...verdict.quarantined
           ? { quarantined: true, ...verdict.reason === undefined ? {} : { quarantineReason: verdict.reason } }
           : { quarantined: false, quarantineReason: undefined },
@@ -1125,13 +1327,22 @@ export class MemoryEngine extends Service {
         updatedAt: Date.now(),
       }
     }
+    // 注入位变化单独发一条事件：客户端与面板据此刷新「常驻」列，只发 status 会漏掉它
+    const publish = (previous: StoredBlock, updated: StoredBlock): MemoryRecord => {
+      const record = toRecord(id, updated)
+      this.ctx.emit('memory/changed', { operation: 'status', id, status: normalizeBlock(updated).status })
+      const wasInjected = normalizeBlock(previous).injected
+      const isInjected = normalizeBlock(updated).injected
+      if (isInjected !== wasInjected) {
+        this.ctx.emit('memory/changed', { operation: 'injected', id, injected: isInjected })
+      }
+      return record
+    }
     const global = this.requireTable('global').get(id)
     if (global !== undefined) {
       const updated = applyPatch(global)
       await this.requireTable('global').put(id, updated)
-      const record = toRecord(id, updated)
-      this.ctx.emit('memory/changed', { operation: 'status', id, status: normalizeBlock(updated).status })
-      return record
+      return publish(global, updated)
     }
     const project = await this.projectTableFor(projectCwd)
     if (project !== undefined) {
@@ -1139,9 +1350,7 @@ export class MemoryEngine extends Service {
       if (block !== undefined) {
         const updated = applyPatch(block)
         await project.put(id, updated)
-        const record = toRecord(id, updated)
-        this.ctx.emit('memory/changed', { operation: 'status', id, status: normalizeBlock(updated).status })
-        return record
+        return publish(block, updated)
       }
     }
     throw new Error(`cannot update unknown memory '${id}'`)

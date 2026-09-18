@@ -67,11 +67,17 @@ export class MemoryGateway extends TypertRemoteService {
   /**
    * 注入预览（0.3.5 + 0.5.2）：开发者查看当前注入到 system prompt 的记忆
    * 内容——self 自述 + 当前会话工作区（cwd）的 approved+injected 记忆，
-   * 经摘要化 + 预算截断（与 memory:recall 同源渲染）。
+   * 经摘要化 + 预算截断（与 memory:recall 同源渲染）。`omittedRecords`
+   * （2026-09-18）供面板展开「哪些常驻没进上下文」。
    */
   @Remote('injectionPreview')
   async injectionPreview(cwd?: string, budget?: number | null, summaryChars?: number): Promise<{
-    self: string, lines: string[], budget: number | null, omitted: number, chars: number,
+    self: string
+    lines: string[]
+    budget: number | null
+    omitted: number
+    omittedRecords: Array<{ id: string, line: string }>
+    chars: number
   }> {
     if (cwd !== undefined) await this.ctx.memory.ensureProjectOpen(cwd)
     return {

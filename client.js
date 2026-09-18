@@ -196,6 +196,9 @@ var STRINGS = {
     confirmAll: "\u5168\u90E8\u653E\u884C",
     injectPreview: "\u6CE8\u5165\u9884\u89C8",
     contextUsage: "\u4E0A\u4E0B\u6587\u5360\u7528",
+    injectionOmitted: "{count} \u6761\u5E38\u9A7B\u8BB0\u5FC6\u672A\u6CE8\u5165\uFF08\u5C55\u5F00\u67E5\u770B\uFF09",
+    budgetLabel: "\u9884\u7B97",
+    contextUsageDetail: "{self}+{injected} \u5B57\u7B26{budget} \u2248 {tokens} token",
     keywordsLabel: "\u5173\u952E\u8BCD",
     suggested: "\u9694\u79BB",
     approved: "\u5DF2\u751F\u6548",
@@ -249,6 +252,9 @@ var STRINGS = {
     confirmAll: "Release all",
     injectPreview: "Injection preview",
     contextUsage: "Context usage",
+    injectionOmitted: "{count} resident memories not injected (expand)",
+    budgetLabel: "budget",
+    contextUsageDetail: "{self}+{injected} chars{budget} \u2248 {tokens} token",
     keywordsLabel: "Keywords",
     suggested: "Quarantined",
     approved: "Active",
@@ -985,13 +991,23 @@ function MemoryView(props) {
             const selfChars = preview.self.length;
             const total = selfChars + preview.chars;
             const tokens = Math.ceil(total / 2);
-            const budgetText = preview.budget === null ? "" : ` / \u9884\u7B97 ${preview.budget}`;
-            const omittedText = preview.omitted > 0 ? `\uFF08\u7701\u7565 ${preview.omitted} \u6761\uFF09` : "";
-            return `${selfChars}+${preview.chars} \u5B57\u7B26${budgetText}${omittedText} \u2248 ${tokens} token`;
+            const budgetText = preview.budget === null ? "" : ` / ${t("budgetLabel")} ${preview.budget}`;
+            return t("contextUsageDetail", { self: selfChars, injected: preview.chars, budget: budgetText, tokens });
           })())
         ),
         (0, import_react.createElement)("div", { style: { ...ssid.text, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all" } }, preview.self),
-        preview.lines.length === 0 ? (0, import_react.createElement)("div", { style: ssid.muted }, t("empty")) : preview.lines.map((line, index) => (0, import_react.createElement)("div", { key: index, style: { ...ssid.muted, fontSize: 11 } }, line))
+        preview.lines.length === 0 ? (0, import_react.createElement)("div", { style: ssid.muted }, t("empty")) : preview.lines.map((line, index) => (0, import_react.createElement)("div", { key: index, style: { ...ssid.muted, fontSize: 11 } }, line)),
+        // 预算诊断（2026-09-18）：被预算挡在外面的常驻记忆——展开可见 id 与摘要
+        preview.omittedRecords.length > 0 ? (0, import_react.createElement)(
+          "details",
+          { style: { ...ssid.muted, fontSize: 11 } },
+          (0, import_react.createElement)(
+            "summary",
+            { style: { cursor: "pointer" } },
+            t("injectionOmitted", { count: preview.omitted })
+          ),
+          preview.omittedRecords.map((record, index) => (0, import_react.createElement)("div", { key: index, style: { ...ssid.muted, fontSize: 11, marginTop: 4 } }, record.line))
+        ) : null
       ) : null,
       // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）
       namespace === "workspace" && (props.cwd === void 0 || props.cwd === "") ? (0, import_react.createElement)("div", { style: ssid.empty }, t("noWorkspace")) : listSection

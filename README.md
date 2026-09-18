@@ -41,7 +41,7 @@ npm install @max-null/dsh-memory
 
 - **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `setStatus`
 - **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_confirm`、`memory_forget`、`memory_update`
-- **注入**：`tool:memory` 指引 section + `memory:recall` 召回 context（global 的 `approved + injected` + 当前会话工作区的 `approved + injected`，带 `[memory:<id>:<namespace>]` 来源标记；摘要化 + 预算截断）
+- **注入**：`tool:memory` 指引 section（工具用法 + 常驻注入判据）+ `memory:self` 机制自述 + `memory:recall` 召回 context（global 的 `approved + injected` + 当前会话工作区的 `approved + injected`，带 `[memory:<id>:<namespace>]` 来源标记；摘要化 + 预算截断）
 - **检索**：BM25（CJK 单字 + 2-gram，content 与 keywords 字段分离加权；中文多字查询精度显著优于单字切分）；可选语义融合（见「可选配置」）
 
 ## 两层存储（global / project）
@@ -55,6 +55,16 @@ npm install @max-null/dsh-memory
 
 两个根都可用 config 覆盖（`globalRoot` / `projectRoot`）。`memory_list` / `memory_search` 不带 `namespace` 过滤时会同时查两层。旧版双重前缀文件名（`memory_project_memory_project_<hash>.json`）在打开时自动迁移为规范名。
 
+## 多实例共存（0.7.1）
+
+两个 DSH 实例（例如 DSH web 与 SSiD 桌面壳）可以同时运行、共用同一个 `DSH_HOME`，**记忆不再互相抹掉**。
+
+DSH 存储层的写入是「读—改—写全量覆盖」，且官方两个后端都声明不做跨进程协调（`storage-json`：*writer per process and last-write-wins is correct*；`storage-sqlite`：*cross-process coordination is out of scope*）。插件层的处置是**写前重读**（等价于 update 前先 select）：每次写入在串行区里先比对存储文件指纹（mtime + size），发现磁盘被别的实例动过就先重载再写。代价是磁盘没变时的一次 `statSync`。
+
+残余窗口只剩两个实例在**同一瞬间**写——此时后写者赢；同时写**不同**记忆已不再互相影响。
+
+**未覆盖**：`workspace.json`（工作区登记）由 DSH 自己的 workspace 服务写，插件层够不着，仍会被双实例互相覆盖；根因处置在上游——[discussion #6882](https://github.com/deepseek-ai/deepseek-harness/discussions/6882)。当前防线是轮转快照备份（SSiD 侧 `shell/scripts/backup-storages.mjs` + 计划任务）。
+
 ## 使用流程（写入即生效，人为例外干预）
 
 提示词模板库（0.6.0）：`prompt_search / prompt_get / prompt_list / prompt_add` 四个工具管理**模板库**——
@@ -64,14 +74,19 @@ md 文件是唯一事实源（`~/.dsh/prompt-library/*.md` 为 global；`<worksp
 
 ```
 模型 memory_save     →  status: approved，立即生效；命中密钥/凭据规则则隔离（不进检索也不进注入）
+                        给 injected 则同时钉住常驻（0.8.0），不吃下面两条自动规则
 memory_search        →  关键词/语义召回（只搜记忆；模板走 prompt_search 通道，不会混进候选池）
 命中累计 2 次         →  injected: true（自动打开常驻：global + 当前会话工作区，摘要化 + 预算截断）
-30 天未再命中         →  自动撤下常驻（只撤自动开的；人工动过的开关双向豁免）
+30 天未再命中         →  自动撤下常驻（只撤自动开的；人工或模型显式动过的开关双向豁免）
 人（面板 / 开关）     →  钉住 / 删除 / 放行隔离记录 / 回滚
 memory_forget        →  随时删除（删除始终是人的动作）
 ```
 
 两条自动规则撑起淘汰机制：**反复被检索命中**是它值得每轮付费的证据，**长期不再被命中**则自动退出常驻。两者都不删除任何内容——记忆不会无限累积，也不会被系统自行清空。
+
+自动规则对**低频但关键**的记忆（长期约定、判据、委托）够不着：它们不会被反复检索，够不到阈值；勉强够到也会被 30 天撤下。这类走显式路径——在 `memory_save` / `memory_update` 里给 `injected` 即钉住，写的是与面板开关同一套语义（`injectedAuto: false`），此后不受两条自动规则影响。未审核与已隔离的记录不接受注入。
+
+注入有**字符预算**（默认 1500，config `injectionBudget`）：装不下的条目**整条丢弃**（不截内容），按「最近更新优先」取舍——所以 `injected: true` 不等于「每轮真的在场」，它只保证有资格排队。0.9.0 起这种出局不再无声：注入末尾会追加一行 `（另有 N 条常驻因预算未注入：…）`，0.9.1 起列出的是**每条的短摘要**而不是 id——查 id 是什么的那一步最容易省略，省略了就等于没报；**清理干净即自行消失**。面板的注入预览里也能展开看明细。诊断行本身不占预算。
 
 记忆还可声明**有效性锚点**（环境变量 / 工具清单 / 插件版本）：所绑的值变化后，这条记忆被标记 `stale` 并撤下常驻，检索结果里也带出失效提示——环境变了，旧结论就不再被当成仍然正确。
 
@@ -101,6 +116,8 @@ memory_forget        →  随时删除（删除始终是人的动作）
 `embeddings` 接受 `{ embed(texts): Promise<number[][]>, similarity? }` 对象——由宿主装配层提供嵌入实现（如 DeepSeek 嵌入端点）；配置后 `memory_search` 以 BM25 + 语义 RRF 融合，向量增量生成并持久化，嵌入调用失败自动降级为纯 BM25。
 
 ## SSID 系列
+
+本插件是 **[SSID（思灵 · Seek Soul in Darkness）](https://github.com/Max-Null/seek-soul-in-darkness)** 全家桶的一员；也可以单独安装到任意 DSH profile——除设置页的记忆面板外不依赖其它同系列插件。
 
 ## 开发
 

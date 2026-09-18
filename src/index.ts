@@ -13,7 +13,7 @@ import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
 import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
-import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, renderInjection } from './injection.ts'
+import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, omittedNotice, renderInjection } from './injection.ts'
 
 export { MemoryEngine } from './engine.ts'
 export type {
@@ -153,6 +153,8 @@ function promptValue(record: MemoryRecord): PromptToolRecord {
 
 // 0.3.0：审核语义双语（host 侧 GUIDANCE 无法跟随 DSH locale 动态切换，
 // 采用中英双语都写、模型自取——设计文档「风险与注意」）。
+// 0.9.2：常驻注入不再是「人工开关」——0.8.0 起模型侧可经 `injected` 参数显式钉住。
+// 旧表述会让模型以为自己没有该权限，也与同段「人工只在例外时介入」自相矛盾。
 const GUIDANCE =
   'Use memory tools for cross-session preferences, habits, and project conventions. '
   + '记忆工具用于跨会话的偏好、习惯与项目约定。'
@@ -160,9 +162,14 @@ const GUIDANCE =
   + 'by the system and the model, and humans intervene only as exceptions. Credential-like content is '
   + 'quarantined instead. memory_save 写入即生效（`approved`）——记忆由系统与模型自行维护，人工只在例外时介入；'
   + '命中危险内容规则（密钥/凭据）的写入会被隔离。'
-  + 'Approval only marks the content reviewed; whether it is injected every turn is a separate '
-  + 'human-controlled switch (`injected`). 审核通过只代表内容被认可；是否每轮常驻注入由独立的'
-  + '人工开关（`injected`）控制。'
+  + 'Pass `injected: true` on memory_save / memory_update to pin a memory resident in every turn\'s context: '
+  + 'the same switch the settings panel exposes, exempting the record from both automatic rules (promote on '
+  + 'repeated hits, demote after long idle). Reserve it for rules, standing agreements and judgement criteria '
+  + '— the kind that must apply even when nobody thinks to search for them; facts, references and case notes '
+  + 'stay search-only. '
+  + '给 memory_save / memory_update 传 `injected: true` 即把这条钉成每轮常驻——与设置面板是同一个开关，'
+  + '此后不受两条自动规则（反复命中自动开启 / 长期未命中自动撤下）影响。只用于规则、长期约定与判据这类'
+  + '「没人想起来搜也必须生效」的记忆；事实、参考与案例留作按需检索。'
   + 'When earlier context may be relevant, call memory_search to recall it — reviewable memories '
   + '相关历史上下文可用 memory_search 检索；被隔离的记录不进检索。'
   + 'Every memory is plaintext and inspectable with memory_list; memory_forget removes one. '
@@ -175,10 +182,18 @@ const GUIDANCE =
 // （0.3.4 起工作区记忆就按会话 cwd 路由；provider 是同步回调，只读已
 // 打开/缓存的表，未打开时本轮工作区部分为空，由 ensureProjectOpen 预热）。
 // 0.5.2：注入经摘要化 + 预算截断（renderInjection，纯函数）防上下文膨胀。
+// 0.9.0：装不下的条目不再是无声丢弃——末尾追加一行预算诊断（omittedNotice），
+// 报出被挡在外面的 id；它只在有出局时出现，清理干净即消失。
 function recallText(memory: MemoryEngine, projectCwd: string | undefined, budget: number | null, summaryChars: number): string {
   const rendered = renderInjection(memory.recallRecords(projectCwd), budget, summaryChars)
-  if (rendered.lines.length === 0) return ''
-  return `Remembered preferences and conventions — apply these:\n${rendered.lines.join('\n')}`
+  const parts: string[] = []
+  if (rendered.lines.length > 0) {
+    parts.push(`Remembered preferences and conventions — apply these:\n${rendered.lines.join('\n')}`)
+  }
+  // 全部出局（lines 为空）时诊断照出——那正是最该报的情形
+  const notice = omittedNotice(rendered)
+  if (notice !== '') parts.push(notice)
+  return parts.join('\n')
 }
 
 /** 从组装上下文取当前 agent 会话的工作区 cwd（AssembleContext.agent 由 dsh-agent 声明合并提供）。 */
@@ -229,16 +244,39 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     text: SELF_DESCRIPTION,
   })
 
+  const injectionBudget = config?.injectionBudget ?? DEFAULT_INJECTION_BUDGET
+  const summaryChars = config?.summaryChars ?? DEFAULT_SUMMARY_CHARS
   ctx.systemPrompt.context({
     name: 'memory:recall',
     order: 50,
     text: (assembly) => {
       const cwd = assemblyProjectCwd(assembly)
-      if (cwd !== undefined) void memory.ensureProjectOpen(cwd).catch(() => { /* 预热失败无碍：本轮工作区部分为空，下一轮重试 */ })
-      const budget = config?.injectionBudget ?? DEFAULT_INJECTION_BUDGET
-      const summaryChars = config?.summaryChars ?? DEFAULT_SUMMARY_CHARS
-      return recallText(memory, cwd, budget, summaryChars)
+      if (cwd !== undefined) void memory.ensureProjectOpen(cwd).catch(() => { /* 预热失败无碍：本轮工作区部分为空，由下面的 waterfall 兜底 */ })
+      return recallText(memory, cwd, injectionBudget, summaryChars)
     },
+  })
+
+  // 上面那条 provider 是**同步**的（`SystemPrompt.context` 的 `text` 类型就是
+  // `string | ((context) => string)`），而工作区表是异步打开的：重启后首次组装时
+  // 它还没打开，工作区记忆会整整缺席一轮（等预热完成，第二轮才回来）。
+  // `system-prompt/assemble` 是异步 waterfall、文档写明「返回值权威」，在这里补一次。
+  //
+  // **不能拿「此刻表是否打开」当作「provider 渲染时表是否打开」的判据**：provider 里那次
+  // 预热的 Promise 可能在 `next()` 的 await 期间就完成了，于是这里看到「已打开」而跳过，
+  // 而 provider 渲染时它还是空的。所以这里总是重渲染一遍——`renderInjection` 是纯函数、
+  // 读的是内存表，代价可忽略；文本没变就原样返回，不动 downstream 看到的对象。
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    const assembled = await next()
+    const cwd = assemblyProjectCwd(context)
+    if (cwd === undefined || cwd === '') return assembled
+    if (!memory.projectOpen(cwd)) await memory.ensureProjectOpen(cwd).catch(() => undefined)
+    const text = recallText(memory, cwd, injectionBudget, summaryChars)
+    const current = assembled.contexts.find(entry => entry.name === 'memory:recall')
+    if (current === undefined || current.text === text) return assembled
+    return {
+      ...assembled,
+      contexts: assembled.contexts.map(entry => entry.name === 'memory:recall' ? { ...entry, text } : entry),
+    }
   })
 
   // 会话创建即预热对应工作区的 project 表（0.5.1）：让首轮模型请求就
@@ -258,6 +296,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       content: { type: 'string', required: true, description: 'Plaintext memory content.' },
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Where it applies; defaults to global.' },
       keywords: { type: 'array', items: { type: 'string' }, description: 'Explicit searchable anchors for memory_search. Give several angles (synonyms, abbreviations, zh/en) or it will not be found later. 多角度关键词（同义词、缩写、中英），否则将来检索不到它。' },
+      injected: { type: 'boolean', description: 'Set true to make this memory resident in every turn\'s context, as a deliberate decision that no longer auto-expires. Reserve it for rules, standing agreements and judgement criteria — the kind that must apply even when nobody thinks to search for them. Facts, references and case notes stay search-only (omit it). 设为 true 让这条记忆每轮常驻上下文，且视为有意决定、不再被自动淘汰。只用于规则、长期约定与判据——那些「没人想起来搜也必须生效」的记忆；事实、参考与案例留作按需检索（省略即可）。' },
       anchor: {
         type: 'object',
         additionalProperties: false,
@@ -278,6 +317,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         content: args.content,
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
+        ...args.injected === undefined ? {} : { injected: args.injected },
         // 参数已由 tool schema 校验，这里的窄化只为过类型
         ...args.anchor === undefined
           ? {}
@@ -477,11 +517,12 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_update',
-    description: 'Update the content or keywords of one stored memory (e.g. correcting stale facts). The record keeps its review status and injection switch; content that looks like a credential quarantines it instead. 修改一条记忆的内容或关键词（如修正过时信息）。改动后记忆保持原有审核状态与注入开关；若新内容命中危险规则则转为隔离。',
+    description: 'Update the content, keywords or persistent-injection switch of one stored memory (e.g. correcting stale facts). The record keeps its review status; content that looks like a credential quarantines it instead. 修改一条记忆的内容、关键词或常驻注入开关（如修正过时信息）。改动后记忆保持原有审核状态；若新内容命中危险规则则转为隔离。',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
       content: { type: 'string', description: 'New content; omit to keep current. 新内容；省略则保留现有内容.' },
       keywords: { type: 'array', items: { type: 'string' }, description: 'New keywords; omit to keep current. 新关键词；省略则保留现有.' },
+      injected: { type: 'boolean', description: 'Set or clear the persistent-injection switch; omit to keep the current value. Setting it records a deliberate decision — the memory stops being auto-promoted or auto-demoted. See memory_save for what deserves residency. 设置或清除常驻注入开关；省略则保持原值。给值即视为有意决定——此后不受自动升降影响。何时该常驻见 memory_save。' },
     },
     output: {
       schema: RECORD_SCHEMA,
@@ -491,6 +532,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return memory.update(args.id as never, {
         ...args.content === undefined ? {} : { content: args.content },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
+        ...args.injected === undefined ? {} : { injected: args.injected },
       }, execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Update memory', 'other', args.id),

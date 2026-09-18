@@ -202,6 +202,9 @@ const STRINGS = {
     confirmAll: '全部放行',
     injectPreview: '注入预览',
     contextUsage: '上下文占用',
+    injectionOmitted: '{count} 条常驻记忆未注入（展开查看）',
+    budgetLabel: '预算',
+    contextUsageDetail: '{self}+{injected} 字符{budget} ≈ {tokens} token',
     keywordsLabel: '关键词',
     suggested: '隔离',
     approved: '已生效',
@@ -255,6 +258,9 @@ const STRINGS = {
     confirmAll: 'Release all',
     injectPreview: 'Injection preview',
     contextUsage: 'Context usage',
+    injectionOmitted: '{count} resident memories not injected (expand)',
+    budgetLabel: 'budget',
+    contextUsageDetail: '{self}+{injected} chars{budget} ≈ {tokens} token',
     keywordsLabel: 'Keywords',
     suggested: 'Quarantined',
     approved: 'Active',
@@ -327,7 +333,7 @@ interface MemoryApiRecord {
 }
 /** 注入预览（0.5.2）：与 memory:recall 同源渲染——真实注入行 + 预算统计。 */
 interface InjectionPreview {
-  self: string, lines: string[], budget: number | null, omitted: number, chars: number
+  self: string, lines: string[], budget: number | null, omitted: number, omittedRecords: Array<{ id: string, line: string }>, chars: number
 }
 
 async function api(method: string, payload?: Record<string, unknown>): Promise<unknown> {
@@ -944,15 +950,23 @@ function MemoryView(props: MemoryViewProps): ReactNode {
               const total = selfChars + preview.chars
               // 粗估（中英混合，标注 ≈）：中文约 1.5 字符/token，英文约 4 字符/token
               const tokens = Math.ceil(total / 2)
-              const budgetText = preview.budget === null ? '' : ` / 预算 ${preview.budget}`
-              const omittedText = preview.omitted > 0 ? `（省略 ${preview.omitted} 条）` : ''
-              return `${selfChars}+${preview.chars} 字符${budgetText}${omittedText} ≈ ${tokens} token`
+              const budgetText = preview.budget === null ? '' : ` / ${t('budgetLabel')} ${preview.budget}`
+              return t('contextUsageDetail', { self: selfChars, injected: preview.chars, budget: budgetText, tokens })
             })()),
           ),
           createElement('div', { style: { ...ssid.text, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, preview.self),
           preview.lines.length === 0
             ? createElement('div', { style: ssid.muted }, t('empty'))
             : preview.lines.map((line, index) => createElement('div', { key: index, style: { ...ssid.muted, fontSize: 11 } }, line)),
+          // 预算诊断（2026-09-18）：被预算挡在外面的常驻记忆——展开可见 id 与摘要
+          preview.omittedRecords.length > 0
+            ? createElement('details', { style: { ...ssid.muted, fontSize: 11 } },
+              createElement('summary', { style: { cursor: 'pointer' } },
+                t('injectionOmitted', { count: preview.omitted })),
+              preview.omittedRecords.map((record, index) =>
+                createElement('div', { key: index, style: { ...ssid.muted, fontSize: 11, marginTop: 4 } }, record.line)),
+            )
+            : null,
         )
         : null,
       // 未选择工作区：工作区视图显示占位（0.3.4 工作区路由语义）

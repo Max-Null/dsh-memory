@@ -480,6 +480,104 @@ describe('dsh-memory plugin', () => {
     expect(after?.hitCount).toBe(2)         // 计数照常，只是不再据此改注入
   })
 
+  it('2026-09-18: remember 显式指定注入即接管，省略则维持缺省与自动升级资格', async () => {
+    const { ctx } = await setup()
+
+    const pinned = await ctx.memory.remember({ content: 'standing rule', injected: true })
+    expect(pinned.status).toBe('approved')
+    expect(pinned.injected).toBe(true)
+    expect(pinned.injectedAuto).toBe(false)   // 有意决定，不吃自动升降
+
+    // 省略参数：不注入，且 injectedAuto 不落值——保留「被反复命中即自动升常驻」的资格
+    const plain = await ctx.memory.remember({ content: 'on demand fact' })
+    expect(plain.injected).toBe(false)
+    expect(plain.injectedAuto).toBeUndefined()
+
+    // 显式 false 同样是接管：此后被反复命中也不重开
+    const muted = await ctx.memory.remember({ content: 'alpha beta gamma', keywords: ['alpha'], injected: false })
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+    const after = (await ctx.memory.list()).find(item => item.id === muted.id)
+    expect(after?.injected).toBe(false)
+    expect(after?.injectedAuto).toBe(false)
+  })
+
+  it('2026-09-18: remember 指定注入不越过隔离边界', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'token = ghp_0123456789abcdefghijklmnopqrst', injected: true })
+    expect(record.quarantined).toBe(true)
+    expect(record.status).toBe('suggested')
+    expect(record.injected).toBe(false)
+  })
+
+  it('2026-09-18: update 可切注入位，省略则连 injectedAuto 一起保持', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'rule draft' })
+
+    const on = await ctx.memory.update(record.id, { injected: true })
+    expect(on.injected).toBe(true)
+    expect(on.injectedAuto).toBe(false)
+
+    // 只改内容、省略 injected：注入位与其归属都不动
+    const kept = await ctx.memory.update(record.id, { content: 'rule v2' })
+    expect(kept.content).toBe('rule v2')
+    expect(kept.injected).toBe(true)
+    expect(kept.injectedAuto).toBe(false)
+
+    const off = await ctx.memory.update(record.id, { injected: false })
+    expect(off.injected).toBe(false)
+    expect(off.injectedAuto).toBe(false)
+  })
+
+  it('2026-09-18: update 改过注入位之后，自动通道两个方向都失效', async () => {
+    const { ctx } = await setup()
+
+    const muted = await ctx.memory.remember({ content: 'alpha beta gamma', keywords: ['alpha'] })
+    await ctx.memory.update(muted.id, { injected: false })
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+    const afterMute = (await ctx.memory.list()).find(item => item.id === muted.id)
+    expect(afterMute?.injected).toBe(false)   // 命中再多也不越过显式决定
+
+    const pinned = await ctx.memory.remember({ content: 'pinned through update' })
+    await ctx.memory.update(pinned.id, { injected: true })
+    expect(await ctx.memory.demoteStale(undefined, Date.now() + 60 * 24 * 60 * 60 * 1000)).toBe(0)
+    const afterPin = (await ctx.memory.list()).find(item => item.id === pinned.id)
+    expect(afterPin?.injected).toBe(true)     // 长期未命中也不撤
+  })
+
+  it('2026-09-18: update 命中危险规则时连带撤下注入', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'plain note', injected: true })
+    expect(record.injected).toBe(true)
+
+    const updated = await ctx.memory.update(record.id, { content: 'token = ghp_0123456789abcdefghijklmnopqrst' })
+    expect(updated.quarantined).toBe(true)
+    expect(updated.status).toBe('suggested')
+    expect(updated.injected).toBe(false)      // 隔离内容不得常驻
+  })
+
+  it('2026-09-18: 未审核记录不接受注入（与自动升级同一门槛）', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'pending note' })
+    await ctx.memory.setStatus(record.id, 'suggested')
+
+    const updated = await ctx.memory.update(record.id, { injected: true })
+    expect(updated.status).toBe('suggested')
+    expect(updated.injected).toBe(false)
+  })
+
+  it('2026-09-18: memory_save / memory_update 工具的 injected 参数落到存储', async () => {
+    const { ctx } = await setup()
+    const save = ctx.tools.get('memory_save')
+    const saved = await save?.execute?.({ content: 'tool-level pin', injected: true }, {} as never) as { id: string, injected: boolean }
+    expect(saved.injected).toBe(true)
+
+    const update = ctx.tools.get('memory_update')
+    const off = await update?.execute?.({ id: String(saved.id), injected: false }, {} as never) as { injected: boolean }
+    expect(off.injected).toBe(false)
+  })
+
   it('2026-09-15: 自动升的常驻在长期未命中后降级——记忆不会无限累积', async () => {
     const { ctx } = await setup()
     await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
