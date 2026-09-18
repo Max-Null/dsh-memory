@@ -143,6 +143,8 @@ npm run typecheck   # tsc 严格类型检查
 npm test            # vitest 单测
 npm run build       # 产出 dist/
 node scripts/verify-loader.mjs   # 用 Loader 端到端验证插件可加载
+node scripts/scan-orphans.mjs [根目录]       # 清点「当前代码打不开」的记忆文件（只读）
+node scripts/unzstd-frames.mjs <源> <目标>   # 解多帧 zstd（读 DSH 会话日志用）
 ```
 
 ## 依赖（peerDependencies，由宿主提供）

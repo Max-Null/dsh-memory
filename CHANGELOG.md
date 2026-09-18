@@ -2,7 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.10.0] - 2026-09-19（进行中）
+## [0.10.1] - 2026-09-19
+
+### Added（开发工具进包）
+
+- **`scripts/unzstd-frames.mjs`**：多帧 zstd 解压——读 DSH 会话日志的必经一步。DSH 的 `session.v3.jsonl.zstd` 是**多帧拼接**的结果，而 `zlib.zstdDecompressSync()` 只解**第一帧**：实测 2.2 MB 的日志有 **639 帧**，整段解只拿得到几百字节，看起来像「日志是空的」，极易误判。脚本按帧 magic 切分后逐帧解压，头部写明用途 / 判据（`frames` / `ok` / `failed` 三个数）/ 局限（magic 扫描会假阳性），配 `--help` 与语义化退出码（0 = 全解出 / 1 = 有帧失败 / 2 = 用法错误），并写进 `files`。
+- README「开发」段补上两个脚本的用法（`scan-orphans` 与 `unzstd-frames`）。
+
+### Fixed
+
+- 修掉归档来源脚本里的一条容错分支：`zlib.createZstdDecompress()` 是**异步**的，在同步块里 `end()` 之后立刻取 chunks 必然拿不到数据——宁可如实报告失败，也不返回一个看似成功的空结果。
+
+## [0.10.0] - 2026-09-19
 
 ### Fixed（提示词的自足性：陌生环境装上去也能用）
 
