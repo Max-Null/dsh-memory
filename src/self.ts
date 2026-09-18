@@ -3,6 +3,8 @@
  * 0.3.2 起：LLM 每轮知道本环境有记忆机制；不落用户存储，随发版更新，
  * 版本号动态读取 package.json（"只跟随 dsh-memory 组件发版变动"）。
  * 0.9.2：补齐常驻注入机制——`injected` 参数、注入预算上限、预算诊断行的含义。
+ * 0.10.0：修正工具清单（6 → 10，补提示词模板工具）与两层记忆说明——原清单漏了
+ * `prompt_*` 系列，照它读会以为本插件只有记忆工具。
  */
 import { createRequire } from 'node:module'
 
@@ -19,7 +21,8 @@ export const SELF_VERSION = ((): string => {
 
 export const SELF_DESCRIPTION =
   `[记忆系统自述] 本环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
-  + '你有 6 个记忆工具：memory_save / memory_search / memory_list / memory_update / memory_confirm / memory_forget。'
+  + '你有 10 个工具：**记忆工具** memory_save / memory_search / memory_list / memory_update / memory_confirm / memory_forget（`memory_confirm` 仅在用户明确要求放行隔离记录时用）；**提示词模板工具** prompt_search / prompt_get / prompt_list / prompt_add（模板是 md 文件、**永不注入**，走这条通道，不会混进记忆检索）。'
+  + '记忆分两层：`global` 跨项目（偏好 / 习惯 / 环境知识），`project` 跟随工作区（落在 `<cwd>/.dsh/storages/`，随 git 提交分享）。'
   + '**何时写入**（不必刻意找机会，遇到下面这些就动手）：'
   + '① 用户表达长期偏好或约定（「以后都…」「记住…」「我们的规矩是…」）；'
   + '② 用户纠正了你的做法或理解——把正确结论记下来；'

@@ -35,7 +35,9 @@ export function deriveSummary(content: string, maxChars: number): string {
 
 /** 一条注入行的渲染文本（与面板预览完全一致）。 */
 export function injectionLine(record: MemoryRecord, summaryChars: number): string {
-  return `- [memory:${String(record.id).slice(0, 8)}:${record.namespace}] ${deriveSummary(record.content, summaryChars)}`
+  // ④-A：跨工作区召回时带来源标记（`..` / `../..`）；当前工作区不带，保持既有格式
+  const scope = record.scope === undefined ? '' : `@${record.scope}`
+  return `- [memory:${String(record.id).slice(0, 8)}:${record.namespace}${scope}] ${deriveSummary(record.content, summaryChars)}`
 }
 
 export interface InjectionRender {
@@ -102,4 +104,59 @@ export function omittedNotice(rendered: InjectionRender): string {
   const labels = shown.map(record => record.summary)
   const truncated = rendered.omittedRecords.length > shown.length ? '…' : ''
   return `（另有 ${rendered.omitted} 条常驻因预算未注入：${labels.join('、')}${truncated}）`
+}
+
+/** 子项目索引行列出的条数上限（④-B）：超出以 `…` 结尾，防这行本身失控。 */
+export const NEIGHBOR_NOTICE_LIMIT = 5
+
+/**
+ * 子项目索引行（④-B 2026-09-19）：告诉模型「当前工作区下面还有什么」——它补的是
+ * 「不知道存在」这个检索的结构性盲区，而**不搬运内容**（正文照旧走 memory_search）。
+ *
+ * 与预算诊断行同待遇：**不占注入预算**、自消除（没有子项目记忆时返回空串）。
+ * 只报条数不报 id——这一行的用途是给出**规模与入口**，不是当检索结果用。
+ */
+export function neighborNotice(neighbors: ReadonlyArray<{ name: string, count: number }>): string {
+  if (neighbors.length === 0) return ''
+  const shown = neighbors.slice(0, NEIGHBOR_NOTICE_LIMIT)
+  const labels = shown.map(neighbor => `${neighbor.name}（${neighbor.count} 条）`)
+  const truncated = neighbors.length > shown.length ? '…' : ''
+  return `（本工作区下另有 ${neighbors.length} 个子项目带记忆：${labels.join('、')}${truncated}——用 memory_search 检索）`
+}
+
+/** 索引行列出的主题数上限（① 2026-09-19）：常数级——这行不随库增长。 */
+export const INDEX_NOTICE_TOPICS = 5
+
+/**
+ * 记忆索引行（① 2026-09-19）：给出「库里还有什么、按什么去搜」。
+ *
+ * 它补的是**检索的结构性盲区**——检索是有意图的动作，不知道某条记忆存在就搜不出它。
+ * 注入行每轮只装得下约 11 条，其余上百条对模型完全不可见；这一行报出**规模与入口**，
+ * 让「不在场」变成「知道存在、需要时去取」。
+ *
+ * 为什么不做成一条常驻记忆（用户最初的设想）：那样它会自己占约 135 字符预算、参与零和
+ * 竞争、可能自己也被挤掉，而且记忆增删后**不会自动更新**（目录与内容不一致且无人察觉）。
+ * 做成系统生成的行则：不占预算、不可能腐化、永远反映当前状态。
+ *
+ * 主题取自各条的 `keywords` 词频——那是记忆写入时被要求「给多角度」的字段，**与检索用的
+ * 是同一套词汇**，所以索引里出现的词就是能搜到的词。同频时按字典序排，保证输出确定。
+ */
+export function indexNotice(records: ReadonlyArray<MemoryRecord>): string {
+  const usable = records.filter(record =>
+    record.status === 'approved'
+    && record.quarantined !== true
+    && (record.kind ?? 'fact') !== 'prompt')
+  if (usable.length === 0) return ''
+  const counts = new Map<string, number>()
+  for (const record of usable) {
+    for (const keyword of record.keywords) {
+      counts.set(keyword, (counts.get(keyword) ?? 0) + 1)
+    }
+  }
+  if (counts.size === 0) return ''
+  const topics = [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, INDEX_NOTICE_TOPICS)
+  const labels = topics.map(([topic, count]) => `${topic}(${count})`)
+  return `（索引：当前可见 ${usable.length} 条记忆，主题集中在 ${labels.join('、')}——用 memory_search 检索）`
 }

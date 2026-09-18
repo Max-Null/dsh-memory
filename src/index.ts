@@ -13,7 +13,7 @@ import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
 import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
-import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, omittedNotice, renderInjection } from './injection.ts'
+import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, indexNotice, neighborNotice, omittedNotice, renderInjection } from './injection.ts'
 
 export { MemoryEngine } from './engine.ts'
 export type {
@@ -51,6 +51,11 @@ interface MemoryToolRecord {
   hitCount?: number
   /** 已隔离：不进注入、不进检索（此字段一般只在显式过滤时才出现）。 */
   quarantined?: boolean
+  /**
+   * 来源工作区（④-A 2026-09-19）：仅在跨工作区召回时出现——缺省 = 当前会话工作区，
+   * `..` / `../..` = 上级工作区。
+   */
+  scope?: string
 }
 
 interface MemoryToolHit {
@@ -75,6 +80,7 @@ const RECORD_SCHEMA = {
     staleReason: { type: 'string' },
     hitCount: { type: 'number' },
     quarantined: { type: 'boolean' },
+    scope: { type: 'string', description: '来源工作区（④-A）：缺省 = 当前会话工作区；`..` / `../..` = 上级工作区。' },
   },
 } as const
 
@@ -118,6 +124,7 @@ function recordValue(record: MemoryRecord): MemoryToolRecord {
     ...record.staleReason === undefined ? {} : { staleReason: record.staleReason },
     hitCount: record.hitCount,
     ...record.quarantined === true ? { quarantined: true } : {},
+    ...record.scope === undefined ? {} : { scope: record.scope },
   }
 }
 
@@ -155,6 +162,8 @@ function promptValue(record: MemoryRecord): PromptToolRecord {
 // 采用中英双语都写、模型自取——设计文档「风险与注意」）。
 // 0.9.2：常驻注入不再是「人工开关」——0.8.0 起模型侧可经 `injected` 参数显式钉住。
 // 旧表述会让模型以为自己没有该权限，也与同段「人工只在例外时介入」自相矛盾。
+// 0.10.0：补 namespace 判据——此前只有工具 schema 的 `defaults to global`，全体系没有
+// 任何「该记哪一层」的说明，陌生环境的模型会全写 global，project 层因此永远空着。
 const GUIDANCE =
   'Use memory tools for cross-session preferences, habits, and project conventions. '
   + '记忆工具用于跨会话的偏好、习惯与项目约定。'
@@ -162,6 +171,11 @@ const GUIDANCE =
   + 'by the system and the model, and humans intervene only as exceptions. Credential-like content is '
   + 'quarantined instead. memory_save 写入即生效（`approved`）——记忆由系统与模型自行维护，人工只在例外时介入；'
   + '命中危险内容规则（密钥/凭据）的写入会被隔离。'
+  + 'Choose the namespace by one question — **does this still hold in a different project?** Yes → `global` '
+  + '(preferences, habits, environment knowledge); no → `project` (this repository\'s own conventions, '
+  + 'architecture decisions, its pitfalls). '
+  + '用一句话选 namespace——**换个项目，这条还成立吗？** 成立 → `global`（偏好、习惯、环境知识）；'
+  + '不成立 → `project`（本仓库自己的约定、架构决策、它踩过的坑）。'
   + 'Pass `injected: true` on memory_save / memory_update to pin a memory resident in every turn\'s context: '
   + 'the same switch the settings panel exposes, exempting the record from both automatic rules (promote on '
   + 'repeated hits, demote after long idle). Reserve it for rules, standing agreements and judgement criteria '
@@ -193,6 +207,12 @@ function recallText(memory: MemoryEngine, projectCwd: string | undefined, budget
   // 全部出局（lines 为空）时诊断照出——那正是最该报的情形
   const notice = omittedNotice(rendered)
   if (notice !== '') parts.push(notice)
+  // ① 索引行：给出「库里还有什么、按什么去搜」（不占预算、长度常数级）
+  const index = indexNotice(memory.indexCandidates(projectCwd))
+  if (index !== '') parts.push(index)
+  // ④-B：子项目索引（有才出、不占预算）——补「不知道存在」这个检索的结构性盲区
+  const neighbors = neighborNotice(memory.neighborsOf(projectCwd))
+  if (neighbors !== '') parts.push(neighbors)
   return parts.join('\n')
 }
 

@@ -6,9 +6,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { defineDomain, domainTable, DomainFacility } from '@deepseek-ai/dsh-storage-domain'
@@ -102,6 +103,11 @@ export interface MemoryRecord {
   kind?: MemoryKind
   /** prompt 记录元数据（仅 kind==='prompt'）。 */
   meta?: PromptMetaIndex
+  /**
+   * 来源工作区（④-A 2026-09-19）：仅在跨工作区召回时出现——`undefined` = 当前会话
+   * 工作区，`..` / `../..` = 上级工作区。检索结果与注入行据此标出来源，避免「记忆串味」。
+   */
+  scope?: string
 }
 
 export interface MemoryWrite {
@@ -428,6 +434,10 @@ export class MemoryEngine extends Service {
   private globalTable?: KvTable<string, StoredBlock>
   /** project 域按工作区 cwd 懒打开 + 缓存（多会话并发各工作区独立）。 */
   private projectTables = new Map<string, KvTable<string, StoredBlock>>()
+  /** 子项目发现缓存（④-B 2026-09-19）：key = 工作区路径；值 = 其直接子目录中带记忆的（按条数降序）。 */
+  private readonly neighborCache = new Map<string, Array<{ name: string, count: number }>>()
+  /** 进行中的子项目发现（key → promise）：预热是 fire-and-forget，之后的显式调用与它合流而非重复扫描。 */
+  private readonly neighborOpenings = new Map<string, Promise<Array<{ name: string, count: number }>>>()
   /** 进行中的工作区打开（key → promise）：并发调用复用同一次，见 {@link projectTableFor}。 */
   private readonly projectOpenings = new Map<string, Promise<KvTable<string, StoredBlock>>>()
   private projectFacilities = new Map<string, DomainFacility>()
@@ -570,6 +580,7 @@ export class MemoryEngine extends Service {
     for (const facility of this.projectFacilities.values()) await facility.closeAll()
     this.projectTables.clear()
     this.projectFacilities.clear()
+    this.neighborCache.clear() // ④-B：子项目发现随存储一并作废（外部实例可能刚改过）
     await this.openGlobalFacility()
     for (const key of opened) {
       // 重开失败 = 该工作区退回「未打开」（本轮注入缺这部分，下次访问重试），
@@ -611,6 +622,148 @@ export class MemoryEngine extends Service {
   private projectStoreFile(projectCwd: string): string {
     const key = join(projectCwd)
     return join(this.projectRootFor(key), `${this.projectBackendName(key)}.json`)
+  }
+
+  /**
+   * 工作区链（④-A 2026-09-19）：当前 cwd 起向上，收集**记忆文件已存在**的层级。
+   *
+   * 两条约束：
+   * ① **自身始终纳入**（depth 0）——即使文件还不存在，也保持既有行为（`projectTableFor`
+   *    会创建它，会话预热路径同样如此）。
+   * ② **祖先只收文件已存在的**——对不存在的层级打开表会让 JsonStorageBackend **创建**空
+   *    文件，等于在用户每个祖先目录里留一个空记忆文件。
+   *
+   * `depth` 是真实的上级层数（每向上一步 +1，无论该级是否有文件），供来源标记渲染成
+   * `..` / `../..`。路径一律先 `join()` 规范化再算哈希——`projectBackendName` 对字符串
+   * 敏感，`H:\a\b` 与 `H:/a/b` 会得出**不同**的文件名（设计文档 §2.3）。
+   */
+  private projectChain(cwd: string): Array<{ key: string, depth: number }> {
+    const key = join(cwd)
+    const chain: Array<{ key: string, depth: number }> = [{ key, depth: 0 }]
+    let cur = key
+    let depth = 0
+    for (;;) {
+      const parent = dirname(cur)
+      if (parent === cur) break // 到盘根
+      cur = parent
+      depth += 1
+      if (existsSync(this.projectStoreFile(cur))) chain.push({ key: cur, depth })
+    }
+    return chain
+  }
+
+  /**
+   * 打开工作区链上的表（由近及远）。复用 {@link projectTableFor} 的缓存与并发去重——
+   * 链上每级各自一张表，重复调用不会重复打开。
+   */
+  private async projectChainTables(cwd?: string): Promise<Array<{ key: string, depth: number, table: KvTable<string, StoredBlock> }>> {
+    if (cwd === undefined || cwd === '') return []
+    const out: Array<{ key: string, depth: number, table: KvTable<string, StoredBlock> }> = []
+    for (const { key, depth } of this.projectChain(cwd)) {
+      const table = await this.projectTableFor(key).catch(() => undefined)
+      if (table !== undefined) out.push({ key, depth, table })
+    }
+    return out
+  }
+
+  /** 来源标记：depth 0（当前工作区）不带标记；祖先渲染为 `..` / `../..`。 */
+  private static scopeLabel(depth: number): string | undefined {
+    if (depth === 0) return undefined
+    return Array.from({ length: depth }, () => '..').join('/')
+  }
+
+  /**
+   * 子项目发现（④-B 2026-09-19）：扫描 cwd 的**直接子目录**（不递归——实测一层即覆盖全部
+   * 实际情况：19 个子目录里 3 个带记忆），找出带记忆文件、且其中有非隔离记录的。
+   *
+   * 结果缓存进 {@link neighborCache}——注入 provider 是同步的，只能读缓存；扫描本身在这个
+   * 异步方法里做，由 `ensureProjectOpen` 预热路径触发。
+   *
+   * 跳过点开头的目录（`.dsh` / `.git` 等不是子项目）；只报条数、不搬运内容——索引行的用途
+   * 是「告诉你去搜」，不是把子项目的记忆变成当前会话的持续成本。
+   */
+  async discoverNeighbors(projectCwd: string): Promise<Array<{ name: string, count: number }>> {
+    const key = join(projectCwd)
+    const cached = this.neighborCache.get(key)
+    if (cached !== undefined) return cached
+    // 进行中那次复用：`ensureProjectOpen` 的预热是 fire-and-forget，紧随其后的显式调用
+    // （工具路径 / 测试 / 面板）若各扫一遍，既浪费也可能读到半成品。与 `projectTableFor`
+    // 同一套去重语义。
+    const inFlight = this.neighborOpenings.get(key)
+    if (inFlight !== undefined) return await inFlight
+    const scan = this.scanNeighbors(key)
+    this.neighborOpenings.set(key, scan)
+    try {
+      return await scan
+    } finally {
+      this.neighborOpenings.delete(key)
+    }
+  }
+
+  /** {@link discoverNeighbors} 的实际扫描；并发去重由调用方负责。 */
+  private async scanNeighbors(key: string): Promise<Array<{ name: string, count: number }>> {
+    const found: Array<{ name: string, count: number }> = []
+    let entries: Dirent[] = []
+    try {
+      entries = await readdir(key, { withFileTypes: true })
+    } catch {
+      entries = [] // 目录读不到（不存在 / 无权限）：当作没有子项目，不报错
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+      const sub = join(key, entry.name)
+      if (!existsSync(this.projectStoreFile(sub))) continue
+      const table = await this.projectTableFor(sub).catch(() => undefined)
+      if (table === undefined) continue
+      const count = this.recordsOf(table).filter(record => record.quarantined !== true).length
+      if (count > 0) found.push({ name: entry.name, count })
+    }
+    found.sort((left, right) => right.count - left.count)
+    this.neighborCache.set(key, found)
+    return found
+  }
+
+  /**
+   * 同步读取已发现的子项目（④-B）：注入 provider 是同步回调，只能读缓存。
+   * 缓存由 {@link discoverNeighbors} 在预热路径填充；未跑过时返回空数组——该轮索引行
+   * 缺席、下一轮补上，与工作区表预热同一套取舍。
+   */
+  neighborsOf(projectCwd?: string): Array<{ name: string, count: number }> {
+    if (projectCwd === undefined || projectCwd === '') return []
+    return this.neighborCache.get(join(projectCwd)) ?? []
+  }
+
+  /**
+   * 同步读取索引候选（① 2026-09-19）：global + 工作区链上**已打开**的表里的全部记录。
+   *
+   * 与 {@link recallRecords} 的分工：后者只取 `injected` 的（进注入行），前者取全部
+   * （供索引行统计规模与主题）。同样是同步只读已缓存的表——注入 provider 是同步回调，
+   * 未打开的层级本轮不计入，影响可忽略（链上祖先在检索路径打开后即缓存）。
+   */
+  indexCandidates(projectCwd?: string): MemoryRecord[] {
+    const candidates = this.recordsOf(this.requireTable('global'))
+    if (projectCwd === undefined || projectCwd === '') return candidates
+    for (const { key } of this.projectChain(projectCwd)) {
+      const table = this.projectTables.get(key)
+      if (table !== undefined) candidates.push(...this.recordsOf(table))
+    }
+    return candidates
+  }
+
+  /**
+   * 按 id 定位记录所在表：global 优先，其次工作区链（自身 → 祖先，由近及远）。
+   * **异步版**——写路径必须用它：`writeScope` 可能在本次进入前刚 `reload()`，
+   * 那时同步缓存已被清空（同 {@link markUsedInner} 的注释）。
+   */
+  private async locateRecord(id: MemoryId, projectCwd?: string): Promise<{ table: KvTable<string, StoredBlock>, block: StoredBlock } | undefined> {
+    const global = this.requireTable('global')
+    const globalBlock = global.get(id)
+    if (globalBlock !== undefined) return { table: global, block: globalBlock }
+    for (const { table } of await this.projectChainTables(projectCwd)) {
+      const block = table.get(id)
+      if (block !== undefined) return { table, block }
+    }
+    return undefined
   }
 
   /** 记录当前指纹，作为「这就是我们造成的状态」的基准（写入完成后调用）。 */
@@ -861,12 +1014,16 @@ export class MemoryEngine extends Service {
     return { ...(toolNames === undefined ? {} : { toolNames }), selfVersion: SELF_VERSION }
   }
 
+  /** 同步版定位：只查**已打开**的表（global + 链上已缓存的工作区表）。 */
   private tableOf(id: MemoryId, projectCwd?: string): KvTable<string, StoredBlock> | undefined {
     const global = this.requireTable('global')
     if (global.get(id) !== undefined) return global
     if (projectCwd === undefined || projectCwd === '') return undefined
-    const project = this.projectTables.get(join(projectCwd))
-    return project !== undefined && project.get(id) !== undefined ? project : undefined
+    for (const { key } of this.projectChain(projectCwd)) {
+      const table = this.projectTables.get(key)
+      if (table !== undefined && table.get(id) !== undefined) return table
+    }
+    return undefined
   }
 
   /** 命中标记：写回 lastUsedAt 与命中次数，达标即自动升常驻（2026-09-15）。 */
@@ -881,16 +1038,21 @@ export class MemoryEngine extends Service {
     const global = this.requireTable('global')
     // 取表走异步版：`writeScope` 可能在本次进入前刚 `reload()`（外部实例改过存储），
     // 那时同步缓存已被清空——继续读缓存会把 project 侧的命中静默漏记。
-    const project = await this.projectTableFor(projectCwd)
+    // ④-A：链上的祖先表同样纳入。跨工作区命中的条目也要记账——否则它们的
+    // `lastUsedAt` 长期不动，会被 30 天规则误撤（「用得到却没被记录」）。
+    const chainTables = await this.projectChainTables(projectCwd)
     for (const id of ids) {
       const globalBlock = global.get(id)
       if (globalBlock !== undefined) {
         await this.recordUse(global, id, globalBlock, now)
         continue
       }
-      if (project !== undefined) {
-        const block = project.get(id)
-        if (block !== undefined) await this.recordUse(project, id, block, now)
+      for (const { table } of chainTables) {
+        const block = table.get(id)
+        if (block !== undefined) {
+          await this.recordUse(table, id, block, now)
+          break
+        }
       }
     }
   }
@@ -1193,10 +1355,12 @@ export class MemoryEngine extends Service {
       this.ctx.emit('memory/changed', { operation: 'forgotten', id })
       return true
     }
-    const project = await this.projectTableFor(projectCwd)
-    if (project !== undefined && await project.delete(id)) {
-      this.ctx.emit('memory/changed', { operation: 'forgotten', id })
-      return true
+    // ④-A：删除要能命中链上的祖先表——「检索得到却删不掉」是最别扭的一种不一致
+    for (const { table } of await this.projectChainTables(projectCwd)) {
+      if (await table.delete(id)) {
+        this.ctx.emit('memory/changed', { operation: 'forgotten', id })
+        return true
+      }
     }
     return false
   }
@@ -1207,40 +1371,23 @@ export class MemoryEngine extends Service {
 
   /** {@link setStatus} 的实现体；必须经 `writeScope` 进入。 */
   private async setStatusInner(id: MemoryId, status: MemoryStatus, projectCwd?: string): Promise<MemoryRecord> {
-    const global = this.requireTable('global').get(id)
-    if (global !== undefined) {
-      const updated: StoredBlock = {
-        ...global,
-        status,
-        // 旧数据可能缺 injected，写回时补全（读时迁移值）
-        injected: normalizeBlock(global).injected,
-        // 人工放行 = 审核通过并解除隔离（2026-09-15）
-        ...status === 'approved' ? { quarantined: false, quarantineReason: undefined } : {},
-        updatedAt: Date.now(),
-      }
-      await this.requireTable('global').put(id, updated)
-      const record = toRecord(id, updated)
-      this.ctx.emit('memory/changed', { operation: 'status', id, status })
-      return record
+    // ④-A：定位走工作区链（global 优先，其次自身 → 祖先）——检索得到的记录就该改得动
+    const found = await this.locateRecord(id, projectCwd)
+    if (found === undefined) throw new Error(`cannot set status of unknown memory '${id}'`)
+    const { table, block } = found
+    const updated: StoredBlock = {
+      ...block,
+      status,
+      // 旧数据可能缺 injected，写回时补全（读时迁移值）
+      injected: normalizeBlock(block).injected,
+      // 人工放行 = 审核通过并解除隔离（2026-09-15）
+      ...status === 'approved' ? { quarantined: false, quarantineReason: undefined } : {},
+      updatedAt: Date.now(),
     }
-    const project = await this.projectTableFor(projectCwd)
-    if (project !== undefined) {
-      const block = project.get(id)
-      if (block !== undefined) {
-        const updated: StoredBlock = {
-          ...block,
-          status,
-          injected: normalizeBlock(block).injected,
-          ...status === 'approved' ? { quarantined: false, quarantineReason: undefined } : {},
-          updatedAt: Date.now(),
-        }
-        await project.put(id, updated)
-        const record = toRecord(id, updated)
-        this.ctx.emit('memory/changed', { operation: 'status', id, status })
-        return record
-      }
-    }
-    throw new Error(`cannot set status of unknown memory '${id}'`)
+    await table.put(id, updated)
+    const record = toRecord(id, updated)
+    this.ctx.emit('memory/changed', { operation: 'status', id, status })
+    return record
   }
 
   /**
@@ -1256,17 +1403,8 @@ export class MemoryEngine extends Service {
 
   /** {@link setInjected} 的实现体；必须经 `writeScope` 进入。 */
   private async setInjectedInner(id: MemoryId, injected: boolean, projectCwd?: string): Promise<MemoryRecord> {
-    const locate = async (): Promise<{ table: KvTable<string, StoredBlock>, block: StoredBlock } | undefined> => {
-      const global = this.requireTable('global').get(id)
-      if (global !== undefined) return { table: this.requireTable('global'), block: global }
-      const project = await this.projectTableFor(projectCwd)
-      if (project !== undefined) {
-        const block = project.get(id)
-        if (block !== undefined) return { table: project, block }
-      }
-      return undefined
-    }
-    const found = await locate()
+    // ④-A：定位走工作区链（global 优先，其次自身 → 祖先）
+    const found = await this.locateRecord(id, projectCwd)
     if (found === undefined) throw new Error(`cannot set injected of unknown memory '${id}'`)
     // 模板永不注入（0.6.0）：prompt 记录拒绝开关（UI 对该类不展示开关，此处兜底）
     if ((found.block.kind ?? 'fact') === 'prompt') {
@@ -1338,22 +1476,13 @@ export class MemoryEngine extends Service {
       }
       return record
     }
-    const global = this.requireTable('global').get(id)
-    if (global !== undefined) {
-      const updated = applyPatch(global)
-      await this.requireTable('global').put(id, updated)
-      return publish(global, updated)
-    }
-    const project = await this.projectTableFor(projectCwd)
-    if (project !== undefined) {
-      const block = project.get(id)
-      if (block !== undefined) {
-        const updated = applyPatch(block)
-        await project.put(id, updated)
-        return publish(block, updated)
-      }
-    }
-    throw new Error(`cannot update unknown memory '${id}'`)
+    // ④-A：定位走工作区链（global 优先，其次自身 → 祖先）——检索得到的记录就该改得动
+    const found = await this.locateRecord(id, projectCwd)
+    if (found === undefined) throw new Error(`cannot update unknown memory '${id}'`)
+    const { table, block } = found
+    const updated = applyPatch(block)
+    await table.put(id, updated)
+    return publish(block, updated)
   }
 
   /**
@@ -1363,6 +1492,9 @@ export class MemoryEngine extends Service {
    */
   async ensureProjectOpen(projectCwd: string): Promise<void> {
     const key = join(projectCwd)
+    // ④-B：子项目发现与表预热相互独立——表可能早已打开，而发现还没跑过。
+    // 注入 provider 是同步的、只能读缓存，所以必须在这条异步预热路径上先把发现做掉。
+    if (!this.neighborCache.has(key)) void this.discoverNeighbors(key).catch(() => undefined)
     if (this.projectTables.has(key)) return
     await this.projectTableFor(key)
     // 会话内首次打开工作区表时做一次启动维护（迁移 / 降级 / 锚点校验，2026-09-15）
@@ -1391,17 +1523,18 @@ export class MemoryEngine extends Service {
   }
 
   private async allRecords(namespace?: MemoryNamespace, projectCwd?: string): Promise<MemoryRecord[]> {
-    if (namespace === 'project') {
-      const project = await this.projectTableFor(projectCwd)
-      if (project === undefined) return []
-      return this.recordsOf(project)
+    // ④-A：project 侧从「当前 cwd 那一张表」扩为「工作区链上的表」（自身 + 已存在的祖先）。
+    // 祖先记录带 scope 标记（`..` / `../..`），让调用方与用户都看得出这条来自哪一级。
+    const projectRecords = async (): Promise<MemoryRecord[]> => {
+      const tables = await this.projectChainTables(projectCwd)
+      return tables.flatMap(({ depth, table }) => {
+        const scope = MemoryEngine.scopeLabel(depth)
+        return this.recordsOf(table).map(record => scope === undefined ? record : { ...record, scope })
+      })
     }
+    if (namespace === 'project') return projectRecords()
     if (namespace === 'global') return this.recordsOf(this.requireTable('global'))
-    const project = await this.projectTableFor(projectCwd)
-    return [
-      ...this.recordsOf(this.requireTable('global')),
-      ...(project === undefined ? [] : this.recordsOf(project)),
-    ]
+    return [...this.recordsOf(this.requireTable('global')), ...await projectRecords()]
   }
 
   private recordsOf(table: KvTable<string, StoredBlock>): MemoryRecord[] {
