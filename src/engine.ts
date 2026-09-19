@@ -766,14 +766,25 @@ export class MemoryEngine extends Service {
     return undefined
   }
 
-  /** 记录当前指纹，作为「这就是我们造成的状态」的基准（写入完成后调用）。 */
-  private noteStoreStamps(projectCwd?: string): void {
-    const global = this.globalStoreFile()
-    this.storeStamps.set(global, MemoryEngine.fileStamp(global))
+  /**
+   * 写入协调覆盖的存储文件：global + **全部已打开的工作区表** + 本次 cwd。
+   *
+   * 记录（{@link noteStoreStamps}）与比对（{@link refreshForWrite}）必须共用这一个定义——
+   * 两边各写一份正是漂移的来源：在此之前比对侧只列 global + cwd，而 ④-A 把**读**路径扩到了
+   * 祖先链（`projectChain`），于是被缓存过的祖先层「指纹记下了却从不被检查」——外部改动看不见，
+   * 下一次写回把它**整份覆盖**。**读扩到哪，门就得跟着扩到哪。**
+   */
+  private storeScopeFiles(projectCwd?: string): string[] {
+    const files = [this.globalStoreFile()]
     const scopes = new Set(this.projectTables.keys())
     if (projectCwd !== undefined && projectCwd !== '') scopes.add(join(projectCwd))
-    for (const key of scopes) {
-      const file = this.projectStoreFile(key)
+    for (const key of scopes) files.push(this.projectStoreFile(key))
+    return files
+  }
+
+  /** 记录当前指纹，作为「这就是我们造成的状态」的基准（写入完成后调用）。 */
+  private noteStoreStamps(projectCwd?: string): void {
+    for (const file of this.storeScopeFiles(projectCwd)) {
       this.storeStamps.set(file, MemoryEngine.fileStamp(file))
     }
   }
@@ -787,9 +798,7 @@ export class MemoryEngine extends Service {
       this.noteStoreStamps(projectCwd)
       return
     }
-    const files = [this.globalStoreFile()]
-    if (projectCwd !== undefined && projectCwd !== '') files.push(this.projectStoreFile(projectCwd))
-    for (const file of files) {
+    for (const file of this.storeScopeFiles(projectCwd)) {
       if (MemoryEngine.fileStamp(file) === this.storeStamps.get(file)) continue
       await this.reload()
       this.noteStoreStamps(projectCwd)

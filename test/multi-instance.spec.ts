@@ -11,8 +11,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Storage from '@deepseek-ai/dsh-storage'
@@ -39,10 +39,10 @@ function writeAsExternal(file: string, mutate: (doc: any) => void): void {
   writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`)
 }
 
-function externalBlock(content: string) {
+function externalBlock(content: string, namespace: 'global' | 'project' = 'global') {
   const now = Date.now()
   return {
-    namespace: 'global',
+    namespace,
     status: 'approved',
     injected: false,
     content,
@@ -155,5 +155,41 @@ describe('多实例写入协调', () => {
     await ctx.memory.reload()
 
     expect(ctx.memory.recallRecords(projectCwd).map(hit => hit.content)).toContain('工作区常驻记忆')
+  })
+
+  // ④-A 把**读**路径扩到了祖先链，而写路径的门当时没跟着扩：`refreshForWrite` 只列
+  // global + 当前 cwd，祖先层的文件却被 `noteStoreStamps` 记进指纹表——**记了却不检查**。
+  // 于是被这个会话打开过的祖先层一旦遭外部改动，改写它的那次写入（命中记账、以及
+  // update/forget 这类定位到祖先记录的操作）会把旧内存态整份覆盖上去，外部改动无声消失。
+  // 2026-09-19 用受控探针在真实会话里撞到过这个形状（新探针被抹掉、旧记录连同 hitCount 复活）。
+  it('祖先层被外部改动后，跨链命中记账不会把它覆盖回去', async () => {
+    const { ctx } = await setup()
+    const parentCwd = await mkdtemp(join(tmpdir(), 'dsh-memory-anc-'))
+    const childCwd = join(parentCwd, 'child')
+    await mkdir(childCwd, { recursive: true })
+
+    // 祖先层先有一条记忆：它的存储文件存在，child 的链才会把它纳入
+    await ctx.memory.remember(
+      { content: '祖先层里的一条', keywords: ['祖先层检索'], namespace: 'project' },
+      parentCwd,
+    )
+
+    // child 会话检索一次——祖先层的表由此进入缓存，这正是覆盖得以发生的前提
+    const first = await ctx.memory.search('祖先层检索', undefined, childCwd)
+    expect(first.length).toBe(1)
+
+    // 另一个实例改祖先层的存储文件：只落磁盘，不经过本引擎的内存态
+    const storeDir = join(parentCwd, '.dsh', 'storages')
+    const parentFile = join(storeDir, readdirSync(storeDir)[0] as string)
+    writeAsExternal(parentFile, doc => {
+      doc.tables.blocks['external-anc'] = externalBlock('祖先层外部新增', 'project')
+    })
+
+    // 再检索一次：命中记账写回祖先层的表——这一写必须先把外部改动读进来
+    await ctx.memory.search('祖先层检索', undefined, childCwd)
+
+    const blocks = JSON.parse(readFileSync(parentFile, 'utf8')).tables.blocks
+    expect(Object.keys(blocks)).toContain('external-anc')
+    expect(blocks['external-anc'].content).toBe('祖先层外部新增')
   })
 })
