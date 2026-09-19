@@ -39,8 +39,8 @@ npm install @max-null/dsh-memory
 
 ## 提供的服务与工具
 
-- **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `setStatus`
-- **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_confirm`、`memory_forget`、`memory_update`
+- **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `setStatus` / `move`
+- **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_confirm`、`memory_forget`、`memory_update`、`memory_move`
 - **注入**：`tool:memory` 指引 section（工具用法 + 常驻注入判据）+ `memory:self` 机制自述 + `memory:recall` 召回 context（global 的 `approved + injected` + 当前会话工作区的 `approved + injected`，带 `[memory:<id>:<namespace>]` 来源标记；摘要化 + 预算截断）
 - **检索**：BM25（CJK 单字 + 2-gram，content 与 keywords 字段分离加权；中文多字查询精度显著优于单字切分）；可选语义融合（见「可选配置」）
 
@@ -55,7 +55,7 @@ npm install @max-null/dsh-memory
 
 两个根都可用 config 覆盖（`globalRoot` / `projectRoot`）。`memory_list` / `memory_search` 不带 `namespace` 过滤时会同时查两层。旧版双重前缀文件名（`memory_project_memory_project_<hash>.json`）在打开时自动迁移为规范名。
 
-## 跨工作区可见性（0.10.0）
+## 跨工作区可见性（0.10.0 / 0.11.0）
 
 project 记忆按**会话工作区**分文件存放，所以「工作区」就是可见性的边界。0.10.0 起补了三个方向——针对的是同一个盲区：**不知道存在**（检索是有意图的动作，搜不出自己不知道存在的东西）。
 
@@ -66,6 +66,8 @@ project 记忆按**会话工作区**分文件存放，所以「工作区」就�
 | 全局 | **记忆索引行** | 注入里多一行「索引：当前可见 N 条记忆，主题集中在 X(14)、Y(12)…——用 memory_search 检索」 |
 
 三条边界：**写入永远只落当前工作区**（「我在这个项目里记的东西」不该被推理到别处）；但**检索得到的记录就改得动**——`memory_update` / `memory_forget` 同样沿链定位；**注入路径只读当前工作区**（远处的记忆进检索、不进每轮成本）。
+
+**0.11.0 起，「放错了层」有了显式的修正通道**：`memory_move(id, to)` 把一条记忆移到 `global`、`self`（当前工作区）或相对祖先（`..` / `../..`）。它是**例外动作**——默认写入仍然只落当前工作区，只有当你判定「这条其实属于上一层、或上一层的那一支」时才动它。移动**保持 id**、**从源层删除**（不是复制），并报告移动后源层是否仍看得见它：向上移动源层不失明（继承只向上，`global` 人人可见），向下移动则会让源层及其下层从此看不见它。典型用途是**把放高了的记忆降回它真正属于的工作区**——比如只属于某一个生态的规矩躺在 `global` 里、漏进了无关项目。判据与边界见设计文档 §3.2。
 
 后两行**不占注入预算**、自消除（没有内容时整行不出现），且**长度常数级**——不随记忆增长。索引行里的主题取自各条的关键词词频，与检索用的是同一套词汇，所以**索引里出现的词就是能搜到的词**。
 
