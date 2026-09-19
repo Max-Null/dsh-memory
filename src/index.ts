@@ -176,6 +176,11 @@ const GUIDANCE =
   + 'architecture decisions, its pitfalls). '
   + '用一句话选 namespace——**换个项目，这条还成立吗？** 成立 → `global`（偏好、习惯、环境知识）；'
   + '不成立 → `project`（本仓库自己的约定、架构决策、它踩过的坑）。'
+  + 'Record where a conclusion came from, not just the conclusion: the reason it holds, and the situation '
+  + 'that forced it out. A conclusion without its origin is a ruler with no provenance — it looks '
+  + 'self-evident, and self-evident things get applied mechanically. '
+  + '记结论时一并记下**它是怎么来的**——它为什么成立，以及是什么场景把它逼出来的。没有出处的结论像一把'
+  + '没有来历的尺子：看起来天经地义，而天经地义的东西最容易被机械套用。'
   + 'Pass `injected: true` on memory_save / memory_update to pin a memory resident in every turn\'s context: '
   + 'the same switch the settings panel exposes, exempting the record from both automatic rules (promote on '
   + 'repeated hits, demote after long idle). Reserve it for rules, standing agreements and judgement criteria '
@@ -533,6 +538,32 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return memory.forget(args.id as never, execProjectCwd(exec)).then(deleted => ({ deleted }))
     },
     presentCall: args => present('Forget memory', 'other', args.id),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'memory_move',
+    description: 'Move one memory to another layer: `global`, `self` (the current workspace), or a relative ancestor (`..` / `../..`). Use it when a memory sits at the wrong level — a project-specific rule parked in `global` that leaks into unrelated workspaces, or a fact that turned out to hold for sibling projects too. The record keeps its id, and the result reports whether the source layer still sees it. 把一条记忆移到另一层：`global`、`self`（当前工作区）或相对祖先（`..` / `../..`）。用于记忆待错了层——只属于某个项目的规矩躺在 `global` 里、漏进无关工作区，或某条事实其实对兄弟项目也成立。id 保持不变，结果里会报告移动后源层是否仍看得见它。',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Exact memory id from memory_list or memory_search. 要移动的记忆 id。' },
+      to: { type: 'string', required: true, description: 'Target layer: `global`, `self` (current workspace), or a relative ancestor such as `..` / `../..`. 目标层：`global`、`self`（当前工作区），或 `..` / `../..` 这样的相对祖先。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          from: { type: 'string', required: true, description: '移动前所在的层（`global` 或工作区路径）。' },
+          to: { type: 'string', required: true, description: '移动后的层。' },
+          sourceStillSees: { type: 'boolean', required: true, description: '源层移动后是否仍看得见它。为假表示源层及其下层从此看不见这条记忆。' },
+        },
+      },
+      render: (_args, value) => renderJson(value),
+    },
+    execute(args, exec) {
+      return memory.move(args.id as never, args.to, execProjectCwd(exec))
+    },
+    presentCall: args => present('Move memory', 'other', `${args.id} → ${args.to}`),
   }))
 
   ctx.tools.register(defineTool({

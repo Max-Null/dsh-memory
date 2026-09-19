@@ -195,6 +195,7 @@ export type MemoryChange =
   | { operation: 'status'; id: MemoryId; status: MemoryStatus }
   | { operation: 'injected'; id: MemoryId; injected: boolean }
   | { operation: 'quarantined'; id: MemoryId; quarantined: boolean }
+  | { operation: 'moved'; id: MemoryId; from: string; to: string }
 
 /** 自动升常驻所需的命中次数（2026-09-15）：一次偶然命中不足以证明「每轮都值得付费」。 */
 const AUTO_INJECT_HITS = 2
@@ -1372,6 +1373,108 @@ export class MemoryEngine extends Service {
       }
     }
     return false
+  }
+
+  /**
+   * 把一条记忆移到另一层（迭代设计 §3.2）。**两个方向共用一个操作**：向上提到祖先层或
+   * `global`，向下把误放高层的降回它真正属于的工作区。
+   *
+   * 原设计（`memory_promote`）只允许向上，理由是「往下或横向会让原本能看见的人失明」。
+   * 但**移动的本意就是改变谁能看见**——那不是副作用，是目的。所以约束从「禁止方向」
+   * 换成「让后果可见」：返回值里的 `sourceStillSees` 就是那个后果。
+   */
+  async move(
+    id: MemoryId,
+    to: string,
+    projectCwd?: string,
+  ): Promise<{ id: MemoryId, from: string, to: string, sourceStillSees: boolean }> {
+    return this.writeScope(projectCwd, () => this.moveInner(id, to, projectCwd))
+  }
+
+  /** {@link move} 的实现体；必须经 `writeScope` 进入。 */
+  private async moveInner(
+    id: MemoryId,
+    to: string,
+    projectCwd?: string,
+  ): Promise<{ id: MemoryId, from: string, to: string, sourceStillSees: boolean }> {
+    const target = MemoryEngine.resolveTarget(to, projectCwd)
+    const found = await this.locateWithKey(id, projectCwd)
+    if (found === undefined) throw new Error(`cannot move unknown memory '${id}'`)
+    const destination = target.kind === 'global'
+      ? this.requireTable('global')
+      : await this.projectTableFor(target.key)
+    if (destination === undefined) throw new Error('cannot move a project memory without a workspace cwd')
+    if (destination === found.table) throw new Error(`memory '${id}' is already stored in '${to}'`)
+
+    // 先写目标、再删源：中间态里它同时存在于两处（重复好过丢失），而两次写同处一个
+    // writeScope，外部看不到中间态。
+    await destination.put(id, found.block)
+    await found.table.delete(id)
+
+    // 继承只向上，而 global 人人可见——所以「移进 global」与「移进自己的某个祖先」都能
+    // 让源层继续看得见它；反过来（global → 某工作区、祖先 → 后代）就是缩小范围。
+    const sourceStillSees = target.kind === 'global'
+      || (found.key !== 'global' && MemoryEngine.isAncestorOrSelf(target.key, found.key))
+    const movedTo = target.kind === 'global' ? 'global' : target.key
+    this.ctx.emit('memory/changed', { operation: 'moved', id, from: found.key, to: movedTo })
+    return { id, from: found.key, to: movedTo, sourceStillSees }
+  }
+
+  /** 按 id 定位记录**并带上它所在的层**（`locateRecord` 只返回表，而移动必须知道来源层）。 */
+  private async locateWithKey(
+    id: MemoryId,
+    projectCwd?: string,
+  ): Promise<{ key: string, table: KvTable<string, StoredBlock>, block: StoredBlock } | undefined> {
+    const global = this.requireTable('global')
+    const globalBlock = global.get(id)
+    if (globalBlock !== undefined) return { key: 'global', table: global, block: globalBlock }
+    for (const { key, table } of await this.projectChainTables(projectCwd)) {
+      const block = table.get(id)
+      if (block !== undefined) return { key, table, block }
+    }
+    return undefined
+  }
+
+  /**
+   * 解析 `memory_move` 的目标：`global`、`self` / `.`（当前 cwd），或相对祖先（`..`、`../..`）。
+   *
+   * 用**相对深度**而不是绝对路径，是为了和来源标记 `scope`（`..` / `../..`）说同一套话。
+   * 允许落在**还没有记忆文件**的祖先层——移动是显式动作，在那儿创建文件正是目的，
+   * 不是 `projectChain` 要避免的那种副作用。
+   */
+  private static resolveTarget(
+    to: string,
+    projectCwd?: string,
+  ): { kind: 'global' } | { kind: 'workspace', key: string } {
+    const raw = to.trim()
+    if (raw === 'global') return { kind: 'global' }
+    if (projectCwd === undefined || projectCwd === '') {
+      throw new Error('moving a memory into a workspace layer needs a session cwd')
+    }
+    if (raw === 'self' || raw === '.') return { kind: 'workspace', key: join(projectCwd) }
+    const parts = raw.split(/[\\/]/).filter(part => part !== '' && part !== '.')
+    if (!parts.every(part => part === '..')) {
+      throw new Error(`unknown move target '${to}' — use 'global', 'self', or a relative ancestor ('..', '../..')`)
+    }
+    let key = join(projectCwd)
+    for (let i = 0; i < parts.length; i++) {
+      const parent = dirname(key)
+      if (parent === key) throw new Error(`move target '${to}' points above the filesystem root`)
+      key = parent
+    }
+    return { kind: 'workspace', key }
+  }
+
+  /** `ancestor` 是否就是 `node` 本身或它的祖先——用来判断移动后源层是否仍看得见。 */
+  private static isAncestorOrSelf(ancestor: string, node: string): boolean {
+    const want = join(ancestor).toLowerCase()
+    let cur = join(node)
+    for (;;) {
+      if (cur.toLowerCase() === want) return true
+      const parent = dirname(cur)
+      if (parent === cur) return false
+      cur = parent
+    }
   }
 
   async setStatus(id: MemoryId, status: MemoryStatus, projectCwd?: string): Promise<MemoryRecord> {

@@ -1,6 +1,6 @@
 {
   "name": "@max-null/dsh-memory",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "Cross-session plaintext memory plugin for the DeepSeek Harness — deterministic BM25 recall, writes take effect immediately, signal-driven injection, no embeddings",
   "license": "MIT",
   "publishConfig": {
