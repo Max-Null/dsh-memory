@@ -71,6 +71,8 @@ project 记忆按**会话工作区**分文件存放，所以「工作区」就�
 
 **孤儿文件清点**：`node scripts/scan-orphans.mjs [根目录]` 报出「哪些记忆文件当前代码已经打不开」（历史命名遗留：早期无哈希后缀、双重 `memory_project_` 前缀）。**只读，不做任何处置**——旧文件可能含未过隔离检查的内容，处置需人工拍板。
 
+**祖先链诊断与探针**：`node scripts/ancestor-probe.mjs plan [--cwd <会话 cwd>]` 只读地复算该 cwd 的祖先链（哪些层级带记忆文件、引擎会纳入几级），并回答「这个 cwd 上祖先链是否**可观测**」——若以上祖先层都没有记忆文件，祖先链生效与否行为逐字相同，那是个零差异的观测点。要实测检索侧跨链，用 `seed` / `check` / `clean` 在祖先层造一条临时探针再撤销。**前提**：探针只对**没打开过该层**的会话有效——引擎的表打开即缓存，而写路径的新鲜度门（`refreshForWrite`）只比对 global 与当前 cwd，**不含祖先层**，被缓存过的层会用陈旧内存态覆盖掉外部写入。
+
 ## 多实例共存（0.7.1）
 
 两个 DSH 实例（例如 DSH web 与 SSiD 桌面壳）可以同时运行、共用同一个 `DSH_HOME`，**记忆不再互相抹掉**。
@@ -145,6 +147,7 @@ npm run build       # 产出 dist/
 node scripts/verify-loader.mjs   # 用 Loader 端到端验证插件可加载
 node scripts/scan-orphans.mjs [根目录]       # 清点「当前代码打不开」的记忆文件（只读）
 node scripts/unzstd-frames.mjs <源> <目标>   # 解多帧 zstd（读 DSH 会话日志用）
+node scripts/ancestor-probe.mjs plan [--cwd <cwd>]   # 复算祖先链（只读）；seed/check/clean 验 ④-A
 ```
 
 ## 依赖（peerDependencies，由宿主提供）

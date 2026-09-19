@@ -25,7 +25,8 @@
     "LICENSE",
     "docs/shots",
     "scripts/scan-orphans.mjs",
-    "scripts/unzstd-frames.mjs"
+    "scripts/unzstd-frames.mjs",
+    "scripts/ancestor-probe.mjs"
   ],
   "dsh": {
     "bundle": {
