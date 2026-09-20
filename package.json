@@ -26,7 +26,8 @@
     "docs/shots",
     "scripts/scan-orphans.mjs",
     "scripts/unzstd-frames.mjs",
-    "scripts/ancestor-probe.mjs"
+    "scripts/ancestor-probe.mjs",
+    "scripts/analyze-cooccurrence.mjs"
   ],
   "dsh": {
     "bundle": {

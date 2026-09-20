@@ -150,6 +150,7 @@ node scripts/verify-loader.mjs   # 用 Loader 端到端验证插件可加载
 node scripts/scan-orphans.mjs [根目录]       # 清点「当前代码打不开」的记忆文件（只读）
 node scripts/unzstd-frames.mjs <源> <目标>   # 解多帧 zstd（读 DSH 会话日志用）
 node scripts/ancestor-probe.mjs plan [--cwd <cwd>]   # 复算祖先链（只读）；seed/check/clean 验 ④-A
+node scripts/analyze-cooccurrence.mjs        # 关键词共现分析（记忆之间有没有关系网，只读）
 ```
 
 ## 依赖（peerDependencies，由宿主提供）

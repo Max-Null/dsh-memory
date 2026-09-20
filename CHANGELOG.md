@@ -21,7 +21,8 @@
 
 - **`scripts/unzstd-frames.mjs`**：多帧 zstd 解压——读 DSH 会话日志的必经一步。DSH 的 `session.v3.jsonl.zstd` 是**多帧拼接**的结果，而 `zlib.zstdDecompressSync()` 只解**第一帧**：实测 2.2 MB 的日志有 **639 帧**，整段解只拿得到几百字节，看起来像「日志是空的」，极易误判。脚本按帧 magic 切分后逐帧解压，头部写明用途 / 判据（`frames` / `ok` / `failed` 三个数）/ 局限（magic 扫描会假阳性），配 `--help` 与语义化退出码（0 = 全解出 / 1 = 有帧失败 / 2 = 用法错误），并写进 `files`。
 - **`scripts/ancestor-probe.mjs`**：祖先链**运行时**验证的探针夹具（`plan` / `seed` / `check` / `clean`）。`workspace-chain.spec.ts` 证得了代码逻辑，证不了「装进 profile、跑在真实会话里」的行为；而运行时验证有个陷阱：`scope` 标记只在**跨级命中**时出现，得先有一个「带记忆的祖先层」——本机 `WorkStation` 之上**根本不存在**这样的层，于是祖先链失效与否表现逐字相同（零可观测差异）。脚本负责**造出前提**（在祖先层放一条探针）与**读记账**（`markUsed` 跨链是否把 `hitCount` 写回祖先文件），检索侧那一步仍须由会话完成。含 djb2 指纹自检（算法漂移时**报错**，而不是静默算错文件名）、`--help`、语义化退出码（0 / 1 前置不满足 / 2 用法 / 3 指纹不自检），默认 dry-run，写盘要 `--apply`。
-- README「开发」段补上脚本的用法（`scan-orphans` / `unzstd-frames` / `ancestor-probe`）。
+- **`scripts/analyze-cooccurrence.mjs`**：关键词共现分析——量「记忆之间有没有关系网」（孤立点占比 / 连通分量 / 簇主题 / 阈值敏感度）。实测本机 132 条：共享 ≥2 词仅 **38 对**、**孤立点 86 个（65%）**，据此否决了「图形态」与「相关推荐」两个候选，完整论证见 `docs/决策/2026-09-19-关系维度是否值得做-关键词共现分析.md`。
+- README「开发」段补上脚本的用法（`scan-orphans` / `unzstd-frames` / `ancestor-probe` / `analyze-cooccurrence`）。
 
 ### Fixed
 
