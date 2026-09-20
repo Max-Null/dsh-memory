@@ -2,6 +2,8 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与[语义化版本](https://semver.org/lang/zh-CN/)。
 
+> **关于 git tag**：0.7.1 / 0.7.2 / 0.7.3 / 0.8.0 / 0.9.0 / 0.9.1 六个版本**没有对应的 git tag**。它们的改动在仓库里是一次性提交的（`42b08ab`「feat(memory): 0.7.1–0.9.2 累积改动」，21 文件 / 1482 行），git 历史中不存在这些版本各自的代码状态——给它们各打一个 tag 只能全部指向同一个 commit，那是假精确，所以不补。这六个版本在 npm 上都有记录（`npm view @max-null/dsh-memory versions`）；GitHub 的 Release 列表会跳过它们，缺口即由此而来。
+
 ## [0.11.0] - 2026-09-19
 
 ### Added
