@@ -21,6 +21,12 @@ import { detectSensitive } from './quarantine.ts'
 import { SELF_VERSION } from './self.ts'
 import { anchorHolds } from './anchors.ts'
 import type { AnchorProbes, MemoryAnchor } from './anchors.ts'
+import {
+  DEFAULT_INJECTION_BUDGET,
+  DEFAULT_SUMMARY_CHARS,
+  deriveSummary,
+  renderInjection,
+} from './injection.ts'
 import { QueryLog, rankGapCandidates, summarizeQueryLog, summarizeSources } from './query-log.ts'
 import type { MemorySource, SourceStat } from './query-log.ts'
 
@@ -137,6 +143,14 @@ export interface MemoryFilter {
   quarantined?: boolean
   /** 记录类别过滤（0.6.0）；缺省不过滤（工具层显式传 kind='fact' 保持旧行为）。 */
   kind?: MemoryKind
+  /**
+   * 更新时间下界 / 上界（0.12.0；epoch ms，含端点）。
+   *
+   * **只有 `list` 读这两个字段**——给 `search` 加时间过滤要动候选集（过滤与打分、`markUsed`
+   * 记账的交互：被过滤掉的命中还算不算「用过」），那是另一件要单独论证的事，本版不做。
+   */
+  after?: number
+  before?: number
 }
 
 /** {@link MemoryEngine.update} 的补丁：省略的字段保持原值（`injected` 省略时连 `injectedAuto` 一起保持）。 */
@@ -197,21 +211,57 @@ export type MemoryChange =
   | { operation: 'quarantined'; id: MemoryId; quarantined: boolean }
   | { operation: 'moved'; id: MemoryId; from: string; to: string }
 
-/** 自动升常驻所需的命中次数（2026-09-15）：一次偶然命中不足以证明「每轮都值得付费」。 */
-const AUTO_INJECT_HITS = 2
+/**
+ * 候选提示所需的命中次数（2026-09-15 起是自动升常驻的阈值；0.12.0 改为只提示）。
+ *
+ * 达到它的记录进 {@link MemoryEngine.candidates}，由体检报告与诊断行列出——**不再据此
+ * 改变注入状态**。阈值本身没动：取消自动升之后，它影响的是提示清单的宽度，不再是状态变更。
+ * 一次偶然命中不足以说明任何事，所以起点仍是 2。
+ */
+const CANDIDATE_HITS = 2
 /**
  * 一次检索里最多把前多少条记为「被使用」（2026-09-15）。
  *
  * 不设上限时，命中计数退化成「和查询有任意字符重叠」：BM25 对常见 2-gram 会给全库打分，
- * 一句「实机验证标记」在本机就能命中 81 条，于是**两次检索把所有 approved 记忆都升成常驻**，
- * 注入预算当场被历史条目占满——「反复被命中才值得每轮付费」这个判据也就失效了。
- * 取前 K 名接近「模型真的会看的那几条」，且与检索返回值解耦（返回值不动）。
+ * 一句「实机验证标记」在本机就能命中 81 条。0.12.0 之前这会让**两次检索把所有 approved
+ * 记忆都升成常驻**、注入预算当场被历史条目占满；取消自动升之后危害降级为「候选清单被灌满
+ * 噪音」，但上限仍然必要——它保证 `hitCount` 度量的是「模型真的会看的那几条」。
+ * 与检索返回值解耦（返回值不动）。
  */
 const HIT_MARK_LIMIT = 5
 /** 反查候选的正文摘要长度（字符）。 */
 const GAP_EXCERPT_CHARS = 160
 /** 自动降级的天数阈值（2026-09-15）：与面板的冷数据判定（COLD_DAYS=30）对齐。 */
 const AUTO_DEMOTE_DAYS = 30
+/**
+ * 体检里「久未命中」的默认天数阈值（0.12.0）。
+ *
+ * 比自动降级的 30 天大得多，因为两者判的不是一类东西：30 天判「自动升上来的常驻是否还有
+ * 价值」，而久未命中的对象**本来就不是常驻**——非常驻的记忆几十天不用是常态，阈值定得太低
+ * 会把正常记录报成待清理。
+ */
+const DEFAULT_SWEEP_DAYS = 90
+
+/** 体检报告的单条记录：摘要长度与注入行同量级，便于直接念给人听或写进诊断行。 */
+export interface SweepItem {
+  id: string
+  summary: string
+}
+
+/**
+ * 只读体检的产出（{@link MemoryEngine.sweep}）。四类各有明确的消费者，不做「算了没人读」的采样
+ * ——候选与新失效会进注入诊断行（模型每轮可见），久未命中与全量留给按需调用。
+ */
+export interface SweepReport {
+  /** 当前失效的记录，带原因（锚点不符 / 被取代 / 被撤回）。 */
+  stale: Array<SweepItem & { reason: string | undefined }>
+  /** 久未被检索命中的**非常驻**记录——常驻的「没被查过」是正常的，它本来就每轮在场。 */
+  longUnused: Array<SweepItem & { lastUsed: number }>
+  /** 候选：被反复检索命中但没有被钉成常驻（见 `candidates`）。 */
+  candidates: Array<SweepItem & { hitCount: number }>
+  /** 常驻与注入预算的占用：总数 / 实际进注入 / 预算（无限制时不出现）/ 被挤掉几条。 */
+  resident: { total: number, injected: number, budget: number | undefined, omitted: number }
+}
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -451,6 +501,17 @@ export class MemoryEngine extends Service {
   private writeChain: Promise<unknown> = Promise.resolve()
   /** 会话启动维护只跑一次的标记（2026-09-15）。 */
   private maintenanceDone = false
+
+  /** 最近一次体检的结果（进程内，不落盘）：供注入侧报「本次校验发现的新失效」。 */
+  private lastSweep: SweepReport | undefined
+
+  /**
+   * 最近一次体检结果（只读）。未跑过时为 `undefined`——注入侧据此决定要不要报那一行，
+   * 它只在真有新失效时出现，稀有所以不构成噪音。
+   */
+  get lastSweepReport(): SweepReport | undefined {
+    return this.lastSweep
+  }
 
   constructor(ctx: import('@deepseek-ai/cordis').Context, private readonly config: MemoryConfig = {}) {
     super(ctx, 'memory')
@@ -752,6 +813,81 @@ export class MemoryEngine extends Service {
   }
 
   /**
+   * 只读体检（0.12.0）：把「该退场的」和「钉了却没进来的」摆成一张清单，**不修改任何状态**
+   * ——连时间戳都不写。
+   *
+   * 为什么坚持只读：一只读的工具，最坏情况是报告不准，判断者按错的清单做了坏决定也能追溯；
+   * 一个会改状态的工具，最坏情况是错了都看不见。这决定了它不需要「每日一次」的守卫，也不
+   * 需要定期读者——有人问它就活着，没人问它不产生任何成本（不占预算、不落盘、不写状态）。
+   */
+  async sweep(projectCwd?: string, options?: { days?: number, now?: number }): Promise<SweepReport> {
+    const now = options?.now ?? Date.now()
+    const days = options?.days ?? DEFAULT_SWEEP_DAYS
+    const threshold = now - days * 24 * 60 * 60 * 1000
+    const summaryChars = this.config.summaryChars ?? DEFAULT_SUMMARY_CHARS
+    const brief = (record: MemoryRecord): string => deriveSummary(record.content, summaryChars)
+
+    const records = await this.allRecords(undefined, projectCwd)
+    const stale = records
+      .filter(record => record.stale === true)
+      .map(record => ({ id: String(record.id), summary: brief(record), reason: record.staleReason }))
+    // 只看非常驻：常驻的「没被检索过」是正常的（它本来就每轮在场，不需要被查）
+    const longUnused = records
+      .filter(record => record.injected !== true && (record.lastUsedAt ?? record.updatedAt) < threshold)
+      .map(record => ({
+        id: String(record.id),
+        summary: brief(record),
+        lastUsed: record.lastUsedAt ?? record.updatedAt,
+      }))
+    const candidates = this.candidates(projectCwd)
+      .map(record => ({ id: String(record.id), summary: brief(record), hitCount: record.hitCount ?? 0 }))
+
+    const resident = this.recallRecords(projectCwd)
+    const rendered = renderInjection(resident, this.config.injectionBudget ?? DEFAULT_INJECTION_BUDGET, summaryChars)
+    return {
+      stale,
+      longUnused,
+      candidates,
+      resident: {
+        total: resident.length,
+        injected: rendered.lines.length,
+        // `renderInjection` 用 `null` 表示「预算无限制」，而输出 schema 用「字段缺席」表达
+        // 同一件事（可选字段推导出 `number | undefined`）——在这里归一，避免两套空值语义。
+        budget: rendered.budget ?? undefined,
+        omitted: rendered.omitted,
+      },
+    }
+  }
+
+  /**
+   * 候选（0.12.0）：被反复检索命中、但没有被钉成常驻的记录。**只提示，不改状态。**
+   *
+   * 筛选条件与原自动升级判据逐条对应（approved、未隔离、未被人工否决、非模板、未常驻）
+   * ——判据没变，变的只是它的作用：从「自动钉住」改为「列出来等一个判断」。`hitCount`
+   * 只增不减，所以候选会一直留着，直到被钉住、被删或记录本身消失——这不是缺陷，是提示
+   * 该有的持续性：它只在被消费之后才消失。
+   *
+   * 与 {@link indexCandidates} 的分工：那个取**全部**记录（供索引行统计规模与主题），
+   * 这个只取满足候选条件的（供体检报告与诊断行）。
+   */
+  candidates(projectCwd?: string): MemoryRecord[] {
+    const picked = (table: KvTable<string, StoredBlock>): MemoryRecord[] =>
+      this.recordsOf(table).filter(record => record.status === 'approved'
+        && record.quarantined !== true
+        && record.injected !== true
+        && record.injectedAuto !== false
+        && (record.kind ?? 'fact') !== 'prompt'
+        && (record.hitCount ?? 0) >= CANDIDATE_HITS)
+    const found = picked(this.requireTable('global'))
+    if (projectCwd === undefined || projectCwd === '') return found
+    for (const { key } of this.projectChain(projectCwd)) {
+      const table = this.projectTables.get(key)
+      if (table !== undefined) found.push(...picked(table))
+    }
+    return found
+  }
+
+  /**
    * 按 id 定位记录所在表：global 优先，其次工作区链（自身 → 祖先，由近及远）。
    * **异步版**——写路径必须用它：`writeScope` 可能在本次进入前刚 `reload()`，
    * 那时同步缓存已被清空（同 {@link markUsedInner} 的注释）。
@@ -873,6 +1009,9 @@ export class MemoryEngine extends Service {
       (filter?.quarantined === undefined ? record.quarantined !== true : record.quarantined === filter.quarantined)
       && (filter?.status === undefined || record.status === filter.status)
       && (filter?.injected === undefined || record.injected === filter.injected)
+      // 0.12.0：按更新时间筛——与注入排序、注入行的日期标记同一个依据，不制造第二个「新」的定义
+      && (filter?.after === undefined || record.updatedAt >= filter.after)
+      && (filter?.before === undefined || record.updatedAt <= filter.before)
       && (filter?.kind === undefined || (record.kind ?? 'fact') === filter.kind))
   }
 
@@ -997,8 +1136,11 @@ export class MemoryEngine extends Service {
       }
       const demoted = await this.demoteStale(projectCwd)
       if (demoted > 0) this.ctx.logger?.info?.(`dsh-memory: 长期未命中，撤下常驻 ${demoted} 条`)
-      const staled = await this.verifyAnchors(this.anchorProbes(), projectCwd)
+      const staled = await this.verifyAnchors(this.anchorProbes(projectCwd), projectCwd)
       if (staled > 0) this.ctx.logger?.info?.(`dsh-memory: 锚点校验更新 ${staled} 条`)
+      // 体检（0.12.0）：只读，产物存进实例字段，供注入侧报「本次校验发现的新失效」。
+      // 它在 try 内——报告没有记忆本身重要，失败由下面的 catch 兜住、不阻断启动。
+      this.lastSweep = await this.sweep(projectCwd)
     } catch (error) {
       this.ctx.logger?.warn?.(`dsh-memory: 启动维护失败（不影响使用）：${String(error)}`)
     }
@@ -1007,8 +1149,11 @@ export class MemoryEngine extends Service {
   /**
    * 锚点探测上下文。`toolNames` 拿不到时返回 `undefined`——**不能给空数组**：那会被判成
    * 「工具全没了」，让所有 `tool-list` 锚点误失效。
+   *
+   * `workspaceCwd`（0.12.0）供 `path-exists` 把相对路径解析成绝对路径；缺省时相对路径
+   * 判为「未校验」而不是「不存在」。
    */
-  private anchorProbes(): AnchorProbes {
+  private anchorProbes(workspaceCwd?: string): AnchorProbes {
     let toolNames: string[] | undefined
     try {
       const tools = this.ctx.get('tools') as { list?: () => Array<{ name?: string }> } | undefined
@@ -1021,7 +1166,11 @@ export class MemoryEngine extends Service {
     } catch {
       toolNames = undefined
     }
-    return { ...(toolNames === undefined ? {} : { toolNames }), selfVersion: SELF_VERSION }
+    return {
+      ...(toolNames === undefined ? {} : { toolNames }),
+      selfVersion: SELF_VERSION,
+      ...(workspaceCwd === undefined || workspaceCwd === '' ? {} : { workspaceCwd }),
+    }
   }
 
   /** 同步版定位：只查**已打开**的表（global + 链上已缓存的工作区表）。 */
@@ -1068,9 +1217,16 @@ export class MemoryEngine extends Service {
   }
 
   /**
-   * 命中记账 + 自动升级（2026-09-15 静默记忆机制）：命中次数达阈值即自动打开常驻
-   * 注入——「被反复检索命中」是它值得每轮付费的唯一客观证据。统计性字段不 emit，
-   * 只有真的改变了注入状态才发 `memory/changed`。
+   * 命中记账（2026-09-15 静默记忆机制；0.12.0 取消自动升级）。
+   *
+   * 只记 `hitCount` 与 `lastUsedAt`，**不再据此改变注入状态**。原判据是「被反复检索
+   * 命中」= 值得每轮付费的唯一客观证据，但这条证据测错了东西：命中次数度量的是
+   * **它被想起来了**，而常驻的语义是**它不能被忘**——能被检索命中的恰恰是检索已经
+   * 够用的那些，真正该常驻的（想不起来去查的）命中次数永远是 0。达到
+   * {@link CANDIDATE_HITS} 的记录改由 {@link candidates} 列出，进体检报告与诊断行
+   * 提示，改不改由判断者决定（判据详见设计文档 §二事实四）。
+   *
+   * 统计性字段不 emit：本函数现在不改变任何被订阅的状态。
    */
   private async recordUse(
     table: KvTable<string, StoredBlock>,
@@ -1078,27 +1234,12 @@ export class MemoryEngine extends Service {
     block: StoredBlock,
     now: number,
   ): Promise<void> {
-    const hitCount = (block.hitCount ?? 0) + 1
-    const normalized = normalizeBlock(block)
-    // 人工设置过的（injectedAuto === false）双向豁免：既不被降级，也不被升级。
-    // 少了这一条，人手动关掉的记忆会在下次命中时被系统重新打开——用户唯一能
-    // 表达「不要这条常驻」的动作就失效了，而这与降级侧「人工决定优先」不对称。
-    const promote = normalized.status === 'approved'
-      && block.quarantined !== true
-      && block.injectedAuto !== false
-      // 模板永不注入（0.6.0）：prompt 记录连自动升级的资格都没有。少了这一条，
-      // 模板会因「经常被搜到」而升成常驻，把注入预算花在从不该进上下文的东西上。
-      && (block.kind ?? 'fact') !== 'prompt'
-      && !normalized.injected
-      && hitCount >= AUTO_INJECT_HITS
     const updated: StoredBlock = {
       ...block,
-      hitCount,
+      hitCount: (block.hitCount ?? 0) + 1,
       lastUsedAt: now,
-      ...promote ? { injected: true, injectedAuto: true } : {},
     }
     await table.put(id, updated)
-    if (promote) this.ctx.emit('memory/changed', { operation: 'injected', id, injected: true })
   }
 
   // ── 查询日志与影响力统计（⑥ 2026-09-15）────────────────────────────────
@@ -1538,6 +1679,70 @@ export class MemoryEngine extends Service {
     const record = toRecord(id, updated)
     this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
     return record
+  }
+
+  /**
+   * 语义作废（0.12.0）：把 `targetId` 标成**被 `id` 取代**。
+   *
+   * 与「改内容」的区别：`update` 会让旧内容直接消失，「取代」把痕迹留下来——检索时看到
+   * 「这条已作废，原因是 X」对被主动查的人是信息而不是干扰。`id` 只用来写原因，本身不被
+   * 改动；两条都必须定位得到，否则拒绝（写一个指向不存在记忆的原因没有意义）。
+   *
+   * 下游复用既有的 `stale` 行为：撤常驻、不排除检索、带标注等核对回写。
+   */
+  async supersede(id: MemoryId, targetId: MemoryId, projectCwd?: string): Promise<MemoryRecord> {
+    return this.writeScope(projectCwd, () => this.supersedeInner(id, targetId, projectCwd))
+  }
+
+  /** {@link supersede} 的实现体；必须经 `writeScope` 进入。返回**被标记的那条**。 */
+  private async supersedeInner(id: MemoryId, targetId: MemoryId, projectCwd?: string): Promise<MemoryRecord> {
+    if (id === targetId) throw new Error(`cannot supersede a memory with itself ('${id}')`)
+    if (await this.locateRecord(id, projectCwd) === undefined) {
+      throw new Error(`cannot supersede from unknown memory '${id}'`)
+    }
+    const target = await this.locateRecord(targetId, projectCwd)
+    if (target === undefined) throw new Error(`cannot supersede unknown memory '${targetId}'`)
+    return toRecord(targetId, await this.markStale(targetId, target, `被 ${String(id).slice(0, 8)} 取代`))
+  }
+
+  /**
+   * 撤回（0.12.0）：把本条标成作废并写明原因。**内容保留**——不删除、也不排除检索，
+   * 与锚点失效后「带标注等核对」是同一条路径。
+   */
+  async retract(id: MemoryId, reason: string, projectCwd?: string): Promise<MemoryRecord> {
+    return this.writeScope(projectCwd, () => this.retractInner(id, reason, projectCwd))
+  }
+
+  /** {@link retract} 的实现体；必须经 `writeScope` 进入。 */
+  private async retractInner(id: MemoryId, reason: string, projectCwd?: string): Promise<MemoryRecord> {
+    const found = await this.locateRecord(id, projectCwd)
+    if (found === undefined) throw new Error(`cannot retract unknown memory '${id}'`)
+    return toRecord(id, await this.markStale(id, found, `已撤回：${reason}`))
+  }
+
+  /**
+   * 标失效的共用落点（0.12.0）：写 `stale` + 原因、撤掉常驻、发 `memory/changed`。
+   *
+   * 与 `verifyAnchorsInner` 的失效分支保持**同一组字段**（不动 `status`、不删内容、不排除
+   * 检索）——「被取代」「被撤回」「锚点不符」在下游是同一种状态，只在 `staleReason` 里区分
+   * 来源。失效是一个维度、多种来源，这是那条判据的落点。
+   */
+  private async markStale(
+    id: MemoryId,
+    found: { table: KvTable<string, StoredBlock>, block: StoredBlock },
+    reason: string,
+  ): Promise<StoredBlock> {
+    const updated: StoredBlock = {
+      ...found.block,
+      stale: true,
+      staleReason: reason,
+      injected: false,
+      injectedAuto: false,
+      updatedAt: Date.now(),
+    }
+    await found.table.put(id, updated)
+    this.ctx.emit('memory/changed', { operation: 'status', id, status: normalizeBlock(updated).status })
+    return updated
   }
 
   /**

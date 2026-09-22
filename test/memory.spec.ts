@@ -41,6 +41,10 @@ describe('dsh-memory plugin', () => {
     const self = assembly.contexts.find(context => context.name === 'memory:self')
     expect(self?.text).toContain('dsh-memory v')
     expect(self?.text).toContain('memory_update')
+    // 工具清单漏列的守卫（0.10.0 曾漏掉 prompt_* 系列、0.12.0 补了 memory_sweep）：
+    // 自述是模型行为的实际控制器，清单陈旧等于它按一份不存在的工具面行事。
+    expect(self?.text).toContain('memory_sweep')
+    expect(self?.text).toContain('11 个工具')
 
     await fiber.dispose()
     expect(ctx.tools.get('memory_save')).toBeUndefined()
@@ -406,7 +410,7 @@ describe('dsh-memory plugin', () => {
     expect((await ctx.memory.list()).some(item => item.id === record.id)).toBe(false)
   })
 
-  it('2026-09-15: 命中两次即自动升常驻（淘汰机制的入口由信号驱动）', async () => {
+  it('0.12.0: 命中两次不再自动升常驻，只进候选（判据倒置的修正）', async () => {
     const { ctx } = await setup()
     const record = await ctx.memory.remember({ content: 'alpha beta gamma', keywords: ['alpha'] })
     expect(record.injected).toBe(false)
@@ -415,15 +419,234 @@ describe('dsh-memory plugin', () => {
     const afterFirst = (await ctx.memory.list())[0]
     expect(afterFirst?.injected).toBe(false)   // 一次偶然命中不够
     expect(afterFirst?.hitCount).toBe(1)
+    expect(ctx.memory.candidates().some(item => item.id === record.id)).toBe(false)
 
     await ctx.memory.search('alpha')
     const afterSecond = (await ctx.memory.list())[0]
-    expect(afterSecond?.injected).toBe(true)
-    expect(afterSecond?.injectedAuto).toBe(true)
+    // 关键：命中次数继续记，但不再据此改变注入状态——连自动标记都不落
+    expect(afterSecond?.injected).toBe(false)
+    expect(afterSecond?.injectedAuto).toBeUndefined()
     expect(afterSecond?.hitCount).toBe(2)
+    // 提示仍然在，只是决定权回到判断者手里
+    expect(ctx.memory.candidates().some(item => item.id === record.id)).toBe(true)
   })
 
-  it('2026-09-15: 宽命中不批量记账（命中计数只认前几名，否则两次检索升满全库）', async () => {
+  it('0.12.0: 取消自动升之后，命中记账照旧（hitCount 与 lastUsedAt 都还在累加）', async () => {
+    const { ctx } = await setup()
+    await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
+
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+
+    const after = (await ctx.memory.list())[0]
+    expect(after?.hitCount).toBe(3)                       // 记账没被误删
+    expect(after?.lastUsedAt).toBeTypeOf('number')
+    expect(after?.injected).toBe(false)                   // 但状态一动不动
+  })
+
+  it('0.12.0: 命中不再改写既有的注入状态（含 injectedAuto: true 的历史记录）', async () => {
+    const { ctx, globalRoot } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
+
+    // 构造 0.12.0 之前的自动升形态：直接改存储文件 + reload（引擎对表有内存缓存）
+    const file = join(globalRoot, 'memory.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, Record<string, unknown>> }
+    }
+    Object.assign(raw.tables.blocks[record.id], { injected: true, injectedAuto: true })
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+    await ctx.memory.reload()
+
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+
+    const after = (await ctx.memory.list())[0]
+    expect(after?.injected).toBe(true)          // 历史状态原样保留，不被记账路径改写
+    expect(after?.injectedAuto).toBe(true)
+    expect(after?.hitCount).toBe(2)             // 记账照常
+    expect(ctx.memory.candidates().some(item => item.id === record.id)).toBe(false)  // 已常驻的不算候选
+  })
+
+  it('0.12.0: candidates 的筛选条件逐条成立', async () => {
+    const { ctx } = await setup()
+    const plain = await ctx.memory.remember({ content: 'alpha plain', keywords: ['alpha'] })
+    const pinned = await ctx.memory.remember({ content: 'alpha pinned', keywords: ['alpha'], injected: true })
+    const muted = await ctx.memory.remember({ content: 'alpha muted', keywords: ['alpha'], injected: false })
+    await ctx.memory.promptAdd({ name: 'cand-guard', content: 'alpha template body', tags: ['alpha'] })
+
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+
+    const found = ctx.memory.candidates()
+    const ids = found.map(item => item.id)
+    expect(ids).toContain(plain.id)            // 命够的普通记录 → 入
+    expect(ids).not.toContain(pinned.id)       // 已常驻 → 不入
+    expect(ids).not.toContain(muted.id)        // 人工否决（injectedAuto === false）→ 不入
+    // 隔离记录不入这条由 status/quarantined 双重保证，但未直接投毒构造（触发危险内容检测
+    // 会引入不确定性）——留在代码里可见即可。
+    expect(found.every(item => item.status === 'approved')).toBe(true)
+    expect(found.every(item => (item.hitCount ?? 0) >= 2)).toBe(true)
+    expect(found.some(item => (item.kind ?? 'fact') === 'prompt')).toBe(false)
+  })
+
+  it('0.12.0: memory_list 按更新时间过滤（工具层解析 7d 与绝对日期）', async () => {
+    const { ctx, globalRoot } = await setup()
+    const old = await ctx.memory.remember({ content: 'alpha old', keywords: ['alpha'] })
+    const fresh = await ctx.memory.remember({ content: 'alpha fresh', keywords: ['alpha'] })
+
+    // 把 old 的更新时刻改到 30 天前（再造出「新旧」两种记录）
+    const file = join(globalRoot, 'memory.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, Record<string, unknown>> }
+    }
+    raw.tables.blocks[old.id].updatedAt = Date.now() - 30 * 24 * 60 * 60 * 1000
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+    await ctx.memory.reload()
+
+    const tool = ctx.tools.get('memory_list')
+    const idsOf = async (args: Record<string, unknown>): Promise<string[]> =>
+      (await tool?.execute?.(args, {} as never) as Array<{ id: string }>).map(item => item.id)
+
+    const recent = await idsOf({ after: '7d' })
+    expect(recent).toContain(String(fresh.id))
+    expect(recent).not.toContain(String(old.id))
+
+    const before = await idsOf({ before: '7d' })
+    expect(before).toContain(String(old.id))
+    expect(before).not.toContain(String(fresh.id))
+
+    expect(await idsOf({})).toHaveLength(2)              // 不过滤时两条都在
+    expect(await idsOf({ after: '乱写' })).toHaveLength(2) // 解析不出 = 不过滤，不报错
+  })
+
+  it('0.12.0: sweep 是只读的——连跑两次不产生任何写入', async () => {
+    const { ctx, globalRoot } = await setup()
+    await ctx.memory.remember({ content: 'alpha one', keywords: ['alpha'] })
+    const two = await ctx.memory.remember({ content: 'alpha two', keywords: ['alpha'] })
+    await ctx.memory.setInjected(two.id, true)
+
+    const file = join(globalRoot, 'memory.json')
+    const before = readFileSync(file, 'utf8')
+    const first = await ctx.memory.sweep()
+    const afterFirst = readFileSync(file, 'utf8')
+    const second = await ctx.memory.sweep()
+    const afterSecond = readFileSync(file, 'utf8')
+
+    expect(afterFirst).toBe(before)            // 一个字都没写（连时间戳都没有）
+    expect(afterSecond).toBe(before)
+    expect(second).toEqual(first)              // 幂等
+    expect(first.resident.total).toBe(1)
+    expect(first.resident.injected).toBe(1)
+  })
+
+  it('0.12.0: sweep 的 days 决定久未命中的边界，常驻不算久未命中', async () => {
+    const { ctx } = await setup()
+    const fresh = await ctx.memory.remember({ content: 'alpha fresh', keywords: ['alpha'] })
+    const resident = await ctx.memory.remember({
+      content: 'alpha resident', keywords: ['alpha'], injected: true,
+    })
+
+    const far = Date.now() + 200 * 24 * 60 * 60 * 1000   // 站在 200 天之后回看
+    const report = await ctx.memory.sweep(undefined, { days: 90, now: far })
+    const ids = report.longUnused.map(item => item.id)
+    expect(ids).toContain(String(fresh.id))              // 非常驻且久未命中
+    expect(ids).not.toContain(String(resident.id))       // 常驻的「没被查过」是正常的
+
+    // 阈值放宽到 300 天：同一份数据不再算久未命中（边界确实由 days 决定）
+    const relaxed = await ctx.memory.sweep(undefined, { days: 300, now: far })
+    expect(relaxed.longUnused).toHaveLength(0)
+  })
+
+  it('0.12.0: sweep 报出失效记录（带原因）与候选', async () => {
+    const { ctx } = await setup()
+    const voided = await ctx.memory.remember({ content: 'alpha voided', keywords: ['alpha'] })
+    await ctx.memory.retract(voided.id, '记错了')
+    const candidate = await ctx.memory.remember({ content: 'alpha candidate', keywords: ['alpha'] })
+    await ctx.memory.search('alpha')
+    await ctx.memory.search('alpha')
+
+    const report = await ctx.memory.sweep()
+    expect(report.stale.map(item => item.id)).toContain(String(voided.id))
+    expect(report.stale.find(item => item.id === String(voided.id))?.reason).toBe('已撤回：记错了')
+    expect(report.candidates.map(item => item.id)).toContain(String(candidate.id))
+  })
+
+  it('0.12.0: supersede 把目标标成被取代，取代者自身不动', async () => {
+    const { ctx } = await setup()
+    const older = await ctx.memory.remember({ content: 'alpha old rule', keywords: ['alpha'] })
+    const newer = await ctx.memory.remember({ content: 'alpha new rule', keywords: ['alpha'] })
+
+    const voided = await ctx.memory.supersede(newer.id, older.id)
+    expect(voided.id).toBe(older.id)
+    expect(voided.stale).toBe(true)
+    expect(voided.staleReason).toContain(String(newer.id).slice(0, 8))
+    expect(voided.content).toBe('alpha old rule')        // 内容保留，只是标了作废
+
+    const source = (await ctx.memory.list()).find(item => item.id === newer.id)
+    expect(source?.stale).not.toBe(true)                 // 取代者本身不被动
+    expect(source?.content).toBe('alpha new rule')
+  })
+
+  it('0.12.0: retract 标记作废，内容仍能被检索检回', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha wrong note', keywords: ['alpha'] })
+
+    const voided = await ctx.memory.retract(record.id, '当时记错了')
+    expect(voided.stale).toBe(true)
+    expect(voided.staleReason).toBe('已撤回：当时记错了')
+    expect(voided.content).toBe('alpha wrong note')      // 不删内容
+
+    // 带标注等核对——检索侧放行，注入侧挡下（与锚点失效同一条路径）
+    const hits = await ctx.memory.search('alpha')
+    expect(hits.some(hit => hit.record.id === record.id)).toBe(true)
+  })
+
+  it('0.12.0: 作废同时撤掉常驻，并退出注入候选', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha pinned', keywords: ['alpha'], injected: true })
+    expect((await ctx.memory.list())[0]?.injected).toBe(true)
+    expect(ctx.memory.recallRecords().some(item => item.id === record.id)).toBe(true)
+
+    await ctx.memory.retract(record.id, '不再适用')
+
+    const after = (await ctx.memory.list())[0]
+    expect(after?.injected).toBe(false)                  // 撤常驻
+    expect(after?.status).toBe('approved')               // 但状态不变：仍可检索
+    expect(ctx.memory.recallRecords().some(item => item.id === record.id)).toBe(false)
+  })
+
+  it('0.12.0: supersede / retract 的边界——自身、未知 id 都拒绝', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha note', keywords: ['alpha'] })
+
+    await expect(ctx.memory.supersede(record.id, record.id)).rejects.toThrow(/itself/)
+    await expect(ctx.memory.supersede(record.id, 'no-such-id' as never)).rejects.toThrow(/unknown/)
+    await expect(ctx.memory.retract('no-such-id' as never, 'x')).rejects.toThrow(/unknown/)
+  })
+
+  it('0.12.0: memory_update 的三个动作按 retract > supersedes > update 分派', async () => {
+    const { ctx } = await setup()
+    const target = await ctx.memory.remember({ content: 'alpha target', keywords: ['alpha'] })
+    const source = await ctx.memory.remember({ content: 'alpha source', keywords: ['alpha'] })
+    const tool = ctx.tools.get('memory_update')
+
+    // supersedes：标目标作废，本条不变
+    const afterSuper = await tool?.execute?.(
+      { id: String(source.id), supersedes: String(target.id) }, {} as never)
+    expect(afterSuper?.id).toBe(target.id)
+    expect(afterSuper?.stale).toBe(true)
+    expect((await ctx.memory.list()).find(item => item.id === source.id)?.stale).not.toBe(true)
+
+    // retract 优先于 content：同时给两者时走撤回，content 不生效
+    const afterRetract = await tool?.execute?.(
+      { id: String(source.id), content: 'should not apply', retract: '换个说法' }, {} as never)
+    expect(afterRetract?.stale).toBe(true)
+    expect(afterRetract?.content).toBe('alpha source')
+    expect(afterRetract?.staleReason).toBe('已撤回：换个说法')
+  })
+
+  it('2026-09-15: 宽命中不批量记账（命中计数只认前几名，否则候选清单被灌满噪音）', async () => {
     const { ctx } = await setup()
     // 20 条都含 alpha：BM25 会把它们全部打分，模拟真实库里的宽命中面
     for (let i = 0; i < 20; i += 1) {
@@ -488,7 +711,7 @@ describe('dsh-memory plugin', () => {
     expect(pinned.injected).toBe(true)
     expect(pinned.injectedAuto).toBe(false)   // 有意决定，不吃自动升降
 
-    // 省略参数：不注入，且 injectedAuto 不落值——保留「被反复命中即自动升常驻」的资格
+    // 省略参数：不注入，且 injectedAuto 不落值——保留「被反复命中即进候选提示」的资格
     const plain = await ctx.memory.remember({ content: 'on demand fact' })
     expect(plain.injected).toBe(false)
     expect(plain.injectedAuto).toBeUndefined()
@@ -579,14 +802,28 @@ describe('dsh-memory plugin', () => {
   })
 
   it('2026-09-15: 自动升的常驻在长期未命中后降级——记忆不会无限累积', async () => {
-    const { ctx } = await setup()
-    await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
-    await ctx.memory.search('alpha')
-    await ctx.memory.search('alpha')
-    expect((await ctx.memory.list())[0]?.injected).toBe(true)
+    const { ctx, globalRoot } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
 
-    const later = Date.now() + 31 * 24 * 60 * 60 * 1000
-    expect(await ctx.memory.demoteStale(undefined, later)).toBe(1)
+    // 0.12.0 取消了自动升，所以「自动升上来的常驻」只能构造出来——但**自动降级规则本身
+    // 仍然成立**（库里还留着 0.12.0 之前自动升的记录），因此用例保留、换构造方式：直接改
+    // 存储文件造出 `injectedAuto: true` + 陈旧 lastUsedAt，再 reload 让引擎读到。
+    const file = join(globalRoot, 'memory.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, Record<string, unknown>> }
+    }
+    const stored = raw.tables.blocks[record.id]
+    stored.injected = true
+    stored.injectedAuto = true
+    stored.lastUsedAt = Date.now() - 90 * 24 * 60 * 60 * 1000
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+    await ctx.memory.reload()
+
+    const before = (await ctx.memory.list())[0]
+    expect(before?.injected).toBe(true)
+    expect(before?.injectedAuto).toBe(true)
+
+    expect(await ctx.memory.demoteStale(undefined, Date.now())).toBe(1)
 
     const after = (await ctx.memory.list())[0]
     expect(after?.injected).toBe(false)

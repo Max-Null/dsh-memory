@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MemoryId } from '../src/engine.ts'
 import type { MemoryRecord } from '../src/engine.ts'
-import { DEFAULT_SUMMARY_CHARS, OMITTED_NOTICE_LIMIT, deriveSummary, omittedNotice, renderInjection } from '../src/injection.ts'
+import { DEFAULT_SUMMARY_CHARS, OMITTED_NOTICE_LIMIT, STALE_NOTICE_LIMIT, candidateNotice, deriveSummary, formatDay, injectionLine, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from '../src/injection.ts'
 
 function record(id: string, content: string, updatedAt: number, namespace: 'global' | 'project' = 'global'): MemoryRecord {
   return {
@@ -49,14 +49,58 @@ describe('injection rendering (0.5.2)', () => {
     expect(rendered.omitted).toBe(1)
   })
 
-  it('renderInjection: lastUsedAt outranks updatedAt when both present (0.5.3)', () => {
+  it('0.12.0: lastUsedAt 不再影响注入顺序（旧语义的反向守卫）', () => {
+    // 方向在 0.12.0 被反转。0.5.3 起 `lastUsedAt` 压过 `updatedAt`，而 `markUsed` 就在
+    // 检索路径上——于是「查得多的」挤掉「钉得牢的」，一次 memory_search 就能改变下一轮的
+    // 注入内容。现在顺序只由 `updatedAt` 决定：lastUsedAt 再新也不得前移。
     const usedRecently = {
       ...record('old-updated', 'stale but recently searched', 1),
-      lastUsedAt: 999,
+      lastUsedAt: 999_999,
     }
     const updatedRecently = record('recent', 'recent edit never searched', 500)
     const rendered = renderInjection([updatedRecently, usedRecently], null, DEFAULT_SUMMARY_CHARS)
-    expect(rendered.lines[0]).toContain('stale but recently searched')
+    expect(rendered.lines[0]).toContain('recent edit never searched')
+  })
+})
+
+describe('时间标记（0.12.0）', () => {
+  const at = new Date(2026, 8, 14, 10, 30).getTime()   // 2026-09-14 本地时间
+
+  it('formatDay 取本地日期', () => {
+    expect(formatDay(at)).toBe('2026-09-14')
+    expect(formatDay(new Date(2026, 0, 3).getTime())).toBe('2026-01-03')   // 补零
+  })
+
+  it('注入行带日期，且与 scope 的顺序不歧义（日期在前）', () => {
+    const plain = injectionLine({ ...record('abc', 'note', at), updatedAt: at }, DEFAULT_SUMMARY_CHARS)
+    expect(plain).toContain('@2026-09-14')
+    const scoped = injectionLine(
+      { ...record('abc', 'note', at), updatedAt: at, scope: '..' }, DEFAULT_SUMMARY_CHARS)
+    expect(scoped).toContain('@2026-09-14@..')
+  })
+})
+
+describe('诊断行（0.12.0：新失效与候选）', () => {
+  it('staleNotice: 空清单不出行；非空报条数与摘要', () => {
+    expect(staleNotice([])).toBe('')
+    const line = staleNotice([{ summary: '旧的部署路径' }, { summary: '过时的 API 形状' }])
+    expect(line).toContain('2 条记忆失效')
+    expect(line).toContain('旧的部署路径')
+    expect(line).toContain('过时的 API 形状')
+  })
+
+  it('staleNotice: 超出上限只列前几条并以 … 收尾', () => {
+    const many = Array.from({ length: STALE_NOTICE_LIMIT + 2 }, (_, index) => ({ summary: `第 ${index} 条` }))
+    const line = staleNotice(many)
+    expect(line).toContain(`${many.length} 条记忆失效`)   // 数量报全量
+    expect(line.endsWith('…）')).toBe(true)                // 明细截断有标记
+  })
+
+  it('candidateNotice: 空清单不出行；用短摘要并报总数', () => {
+    expect(candidateNotice([])).toBe('')
+    const line = candidateNotice([{ content: '一条很长的候选记忆正文，摘要只取前面一小段' }])
+    expect(line).toContain('1 条被反复检索但未常驻')
+    expect(line).toContain('一条很长的候选记忆正文')
   })
 })
 
@@ -107,5 +151,32 @@ describe('预算诊断（2026-09-18）', () => {
     expect(notice).toContain(`另有 ${records.length} 条`)
     expect(notice.endsWith('…）')).toBe(true)
     expect(notice.match(/note \d+/g)).toHaveLength(OMITTED_NOTICE_LIMIT)
+  })
+})
+
+describe('neutralizeBraces (0.11.1)', () => {
+  it('中和字面双花括号（严格插值下它会抛错并炸掉会话）', () => {
+    expect(neutralizeBraces('a {{footer}} b')).toBe('a { {footer}} b')
+    expect(neutralizeBraces('a {{footer}} b')).not.toContain('{{')
+  })
+
+  it('三连左花括号不残留（Mustache raw partial 场景）', () => {
+    expect(neutralizeBraces('Mustache raw partial: {{{footer}}}')).not.toContain('{{')
+  })
+
+  it('四连与更长的连续左花括号都收敛', () => {
+    // 单遍 replaceAll 不够：`{{{{a}}}}` 单遍得 `{ {{ {a}}}}`，仍含 `{{`——循环是必需的
+    expect(neutralizeBraces('{{{{a}}}}')).toBe('{ { { {a}}}}')
+    expect(neutralizeBraces('{'.repeat(50))).not.toContain('{{')
+    expect(neutralizeBraces('{'.repeat(1000))).not.toContain('{{')
+  })
+
+  it('无花括号的文本原样返回', () => {
+    expect(neutralizeBraces('plain text 中文')).toBe('plain text 中文')
+  })
+
+  it('孤立的左花括号也一并中和', () => {
+    // 不闭合的 `{{` 本不触发插值（按字面放过），多中和一处无害，换来实现简单可靠
+    expect(neutralizeBraces('这里的 {{ 没有闭合')).toBe('这里的 { { 没有闭合')
   })
 })

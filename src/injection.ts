@@ -33,11 +33,43 @@ export function deriveSummary(content: string, maxChars: number): string {
   return collapsed.length <= maxChars ? collapsed : `${collapsed.slice(0, maxChars)}…`
 }
 
+/**
+ * 中和注入副本里的字面 `{{`。DSH 的系统提示词走**严格插值**：section/context 的
+ * 文本里出现 `{{name}}` 会当场抛错（未注册 → `unknown`；名字不合
+ * `/^[a-z][a-z0-9_]*$/` → `malformed`），而组装发生在模型调用之前——该会话的
+ * 全部模型请求一起失败，模型无从自救（它改不了自己的记忆）。
+ *
+ * 循环替换直至稳定：单遍 `replaceAll` 处理不了 3 连以上左花括号——`{{{{a}}}}`
+ * 单遍得 `{ {{ {a}}}}`，仍含 `{{`。实测 1..1000 连最多 2 轮收敛。
+ *
+ * 只施加于**注入副本**：存储与面板预览都保留原文。记忆是给人看的审计窗口，
+ * 显示被改写过的内容会让人以为记忆本身被改过。
+ */
+export function neutralizeBraces(text: string): string {
+  let result = text
+  while (result.includes('{{')) result = result.replaceAll('{{', '{ {')
+  return result
+}
+
 /** 一条注入行的渲染文本（与面板预览完全一致）。 */
+/**
+ * 日期标记（0.12.0）：`YYYY-MM-DD`，按**本地时区**取，输入是 epoch ms。
+ *
+ * 用绝对日期而不是「18 天前」：相对时间每轮都在变，会把一个稳定的注入副本变成每轮漂移的
+ * 文本——`memory:recall` 本来就是动态 context，但不必要的漂移仍应避免。**减少变化的维度
+ * 是廉价的稳定性。**
+ */
+export function formatDay(at: number): string {
+  const date = new Date(at)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
 export function injectionLine(record: MemoryRecord, summaryChars: number): string {
   // ④-A：跨工作区召回时带来源标记（`..` / `../..`）；当前工作区不带，保持既有格式
   const scope = record.scope === undefined ? '' : `@${record.scope}`
-  return `- [memory:${String(record.id).slice(0, 8)}:${record.namespace}${scope}] ${deriveSummary(record.content, summaryChars)}`
+  // 0.12.0：日期固定在 scope 之前——日期是数字、scope 是点号，顺序固定即无歧义。
+  // 「这条是什么时候记的」直接决定要不要先核对再照它做，尤其对随环境失效的那类记忆。
+  return `- [memory:${String(record.id).slice(0, 8)}:${record.namespace}@${formatDay(record.updatedAt)}${scope}] ${deriveSummary(record.content, summaryChars)}`
 }
 
 export interface InjectionRender {
@@ -58,17 +90,19 @@ export interface InjectionRender {
 }
 
 /**
- * 由候选记录渲染注入行：按使用序降序（lastUsedAt 优先、缺省回退
- * updatedAt——最近使用/更新的记忆最先），逐条累加开销直到预算用尽；
- * 预算为 null 或非正数时全量注入（不过滤）。
+ * 由候选记录渲染注入行：按**更新时间**降序（最近更新的最先），逐条累加开销直到预算
+ * 用尽；预算为 null 或非正数时全量注入（不过滤）。
+ *
+ * 0.12.0 起不再看 `lastUsedAt`：那是**检索**留下的痕迹，而检索是「需要时才用」的行为
+ * ——拿它决定「谁每轮在场」，等于让「查得多的」挤掉「钉得牢的」，而且一次 `memory_search`
+ * 会当场改变下一轮的注入内容（`markUsed` 就在检索路径上）。排序只该由内容本身的变更驱动。
  */
 export function renderInjection(
   records: readonly MemoryRecord[],
   budget: number | null,
   summaryChars: number,
 ): InjectionRender {
-  const ordered = [...records].sort((left, right) =>
-    (right.lastUsedAt ?? right.updatedAt) - (left.lastUsedAt ?? left.updatedAt))
+  const ordered = [...records].sort((left, right) => right.updatedAt - left.updatedAt)
   const lines: string[] = []
   const omittedRecords: Array<{ id: string, line: string, summary: string }> = []
   let chars = 0
@@ -104,6 +138,41 @@ export function omittedNotice(rendered: InjectionRender): string {
   const labels = shown.map(record => record.summary)
   const truncated = rendered.omittedRecords.length > shown.length ? '…' : ''
   return `（另有 ${rendered.omitted} 条常驻因预算未注入：${labels.join('、')}${truncated}）`
+}
+
+/** 注入侧报「新失效」的条数上限——在稀有与有用之间取舍，只报几条就够指向问题。 */
+export const STALE_NOTICE_LIMIT = 3
+/** 候选提示列出的条数上限。 */
+export const CANDIDATE_NOTICE_LIMIT = 3
+/** 候选提示里每条摘要的长度：比注入行更短，这一行本身不该占太多。 */
+export const CANDIDATE_SUMMARY_CHARS = 24
+
+/**
+ * 新失效提示行（0.12.0）：报「本次启动校验发现几条记忆失效」。
+ *
+ * **它稀有，所以不构成噪音**：一条记忆失效意味着「照它行动会出错」，值得每轮看见，直到被
+ * 核对回写或删除。与 {@link omittedNotice} 一样**不占注入预算**（调用方追加在注入行之后）。
+ */
+export function staleNotice(stale: ReadonlyArray<{ summary: string }>): string {
+  if (stale.length === 0) return ''
+  const shown = stale.slice(0, STALE_NOTICE_LIMIT)
+  const truncated = stale.length > shown.length ? '…' : ''
+  return `（本次校验发现 ${stale.length} 条记忆失效：${shown.map(item => item.summary).join('、')}${truncated}）`
+}
+
+/**
+ * 候选提示行（0.12.0）：报「有几条被反复检索命中、但没有被钉成常驻」。
+ *
+ * **判断者是模型自己**——一份不会主动去调的体检报告等于不存在，所以候选必须自己走到它眼前。
+ * `hitCount` 只增不减，候选会一直留着直到被消费（钉住或删掉）：这不是缺陷，是提示该有的
+ * 持续性。**不占注入预算**。
+ */
+export function candidateNotice(candidates: ReadonlyArray<{ content: string }>): string {
+  if (candidates.length === 0) return ''
+  const shown = candidates.slice(0, CANDIDATE_NOTICE_LIMIT)
+  const labels = shown.map(record => deriveSummary(record.content, CANDIDATE_SUMMARY_CHARS))
+  const truncated = candidates.length > shown.length ? '…' : ''
+  return `（另有 ${candidates.length} 条被反复检索但未常驻：${labels.join('、')}${truncated}）`
 }
 
 /** 子项目索引行列出的条数上限（④-B）：超出以 `…` 结尾，防这行本身失控。 */

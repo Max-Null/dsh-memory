@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Storage from '@deepseek-ai/dsh-storage'
-import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import SystemPrompt, { renderContextSections } from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
 import * as plugin from '../src/index.ts'
 
@@ -132,6 +132,45 @@ describe('注入在装配层的完整性', () => {
     expect(text).toContain('较早的常驻约定')   // 出局者以短摘要出现，不再只报 id
   })
 
+  it('0.12.0: 检索不改变注入顺序（本版核心回归）', async () => {
+    const { ctx } = await setup({ injectionBudget: 100 })
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-'))
+
+    const base = Date.now()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(base)
+    const older = await ctx.memory.remember({ content: '较早的常驻约定', namespace: 'project' }, cwd)
+    await ctx.memory.setInjected(older.id, true, cwd)
+    vi.setSystemTime(base + 60_000)
+    const newer = await ctx.memory.remember({ content: '较新的常驻约定', namespace: 'project' }, cwd)
+    await ctx.memory.setInjected(newer.id, true, cwd)
+    vi.useRealTimers()
+
+    const before = recallTextOf(await assembleFor(ctx, cwd))
+
+    // 反复检索「较早」那条：旧实现下 markUsed 会刷新它的 lastUsedAt，把它顶到预算前面
+    await ctx.memory.search('较早的常驻约定', {}, cwd)
+    await ctx.memory.search('较早的常驻约定', {}, cwd)
+
+    const after = recallTextOf(await assembleFor(ctx, cwd))
+    expect(after).toBe(before)   // 注入副本一字未变
+  })
+
+  it('0.12.0: 候选提示出现在注入副本里——判断者必须看得见', async () => {
+    const { ctx } = await setup()
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-'))
+    await ctx.memory.remember({ content: 'alpha 候选条目', keywords: ['alpha'], namespace: 'project' }, cwd)
+
+    // 命中两次即达候选阈值（判据不变，只是不再自动改状态）
+    await ctx.memory.search('alpha', {}, cwd)
+    await ctx.memory.search('alpha', {}, cwd)
+
+    const text = recallTextOf(await assembleFor(ctx, cwd))
+    // 候选是「该不该钉」的待办，而判断者就是读这段上下文的模型——它必须自己走到眼前，
+    // 不能只躺在要主动调的工具里（那等于不存在）。
+    expect(text).toContain('被反复检索但未常驻')
+  })
+
   it('预算充裕时不出诊断行（自消除）', async () => {
     const { ctx } = await setup()
     const cwd = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-'))
@@ -141,5 +180,25 @@ describe('注入在装配层的完整性', () => {
     const text = recallTextOf(await assembleFor(ctx, cwd))
     expect(text).toContain('唯一常驻')
     expect(text).not.toContain('未注入')
+  })
+
+  it('记忆正文含字面 {{ }} 时注入副本被中和，组装渲染不抛错（0.11.1）', async () => {
+    const { ctx } = await setup()
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-'))
+    const record = await ctx.memory.remember(
+      { content: '项目里 Vue 模板用 {{ count }} 做插值', keywords: ['vue'], namespace: 'project' },
+      cwd,
+    )
+    await ctx.memory.setInjected(record.id, true, cwd)
+
+    const assembly = await assembleFor(ctx, cwd)
+    const text = recallTextOf(assembly)
+    expect(text).toContain('做插值')      // 这条记忆确实进了注入
+    expect(text).not.toContain('{{')      // 但副本里的字面双括号已被中和
+
+    // 验收判据是「真实插值路径不抛」，不是字符串断言。注意 renderPrompt() 只处理
+    // sections，而 memory:recall 是 context —— 必须用 renderContextSections；
+    // 拿前者测这条会得到假的「通过」（2026-09-23 实测踩过）。
+    expect(() => renderContextSections(assembly)).not.toThrow()
   })
 })

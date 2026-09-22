@@ -13,7 +13,7 @@ import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
 import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
-import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, indexNotice, neighborNotice, omittedNotice, renderInjection } from './injection.ts'
+import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
 
 export { MemoryEngine } from './engine.ts'
 export type {
@@ -63,6 +63,30 @@ interface MemoryToolHit {
   score: number
 }
 
+/**
+ * 解析时间过滤参数（0.12.0）：`7d` / `30d` 这类相对天数，或 `YYYY-MM-DD` 绝对日期。
+ *
+ * **为什么用字符串而不是数字**：工具参数里目前没有 number 类型的先例（`type: 'number'` 只
+ * 出现在输出 schema），不拿一个未验证的参数类型去赌；字符串也天然容纳 `7d` 这种相对写法。
+ * 解析不出（空串 / 格式不对）一律返回 `undefined` = 不过滤，**不报错**——过滤条件是辅助
+ * 信息，让它把一次查询整体打断得不偿失。
+ *
+ * 绝对日期按**本地时区**解释（`.dsh` 的存储时间戳是 epoch，用户在本地日期里思考），
+ * 相对天数以 `now` 为基准往前推。
+ */
+function parseTimeFilter(input: string | undefined, now: number): number | undefined {
+  if (input === undefined) return undefined
+  const text = input.trim()
+  if (text === '') return undefined
+  const relative = /^(\d+)d$/.exec(text)
+  if (relative !== null) return now - Number(relative[1]) * 24 * 60 * 60 * 1000
+  const absolute = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text)
+  if (absolute !== null) {
+    return new Date(Number(absolute[1]), Number(absolute[2]) - 1, Number(absolute[3])).getTime()
+  }
+  return undefined
+}
+
 const RECORD_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -90,6 +114,71 @@ const HIT_SCHEMA = {
   properties: {
     record: { ...RECORD_SCHEMA, required: true },
     score: { type: 'number', required: true },
+  },
+} as const
+
+/**
+ * 体检报告的输出（0.12.0）：四类清单一律只读。`summary` 与注入行同量级，直接念给人听
+ * 不失真——这个工具的主要用法就是「你问起时我念给你看」。
+ */
+const SWEEP_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    stale: {
+      type: 'array',
+      required: true,
+      description: '当前失效的记录（锚点不符 / 被取代 / 已撤回），带原因。',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          summary: { type: 'string', required: true },
+          reason: { type: 'string' },
+        },
+      },
+    },
+    longUnused: {
+      type: 'array',
+      required: true,
+      description: '久未被检索命中的非常驻记录——清理或归档的候选材料。',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          summary: { type: 'string', required: true },
+          lastUsed: { type: 'number', required: true },
+        },
+      },
+    },
+    candidates: {
+      type: 'array',
+      required: true,
+      description: '被反复检索命中但没有被钉成常驻：要不要钉的待办。',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          summary: { type: 'string', required: true },
+          hitCount: { type: 'number', required: true },
+        },
+      },
+    },
+    resident: {
+      type: 'object',
+      required: true,
+      additionalProperties: false,
+      description: '常驻与注入预算的占用；`omitted > 0` 表示「钉了却没进来」。',
+      properties: {
+        total: { type: 'number', required: true },
+        injected: { type: 'number', required: true },
+        budget: { type: 'number', description: '生效预算（字符）；无限制时不出现。' },
+        omitted: { type: 'number', required: true },
+      },
+    },
   },
 } as const
 
@@ -182,12 +271,14 @@ const GUIDANCE =
   + '记结论时一并记下**它是怎么来的**——它为什么成立，以及是什么场景把它逼出来的。没有出处的结论像一把'
   + '没有来历的尺子：看起来天经地义，而天经地义的东西最容易被机械套用。'
   + 'Pass `injected: true` on memory_save / memory_update to pin a memory resident in every turn\'s context: '
-  + 'the same switch the settings panel exposes, exempting the record from both automatic rules (promote on '
-  + 'repeated hits, demote after long idle). Reserve it for rules, standing agreements and judgement criteria '
+  + 'the same switch the settings panel exposes, exempting the record from the remaining automatic rule '
+  + '(demote after long idle; repeated hits no longer promote anything — they only feed the candidate hint). '
+  + 'Reserve it for rules, standing agreements and judgement criteria '
   + '— the kind that must apply even when nobody thinks to search for them; facts, references and case notes '
   + 'stay search-only. '
   + '给 memory_save / memory_update 传 `injected: true` 即把这条钉成每轮常驻——与设置面板是同一个开关，'
-  + '此后不受两条自动规则（反复命中自动开启 / 长期未命中自动撤下）影响。只用于规则、长期约定与判据这类'
+  + '此后不受剩下那条自动规则（长期未命中自动撤下）影响；反复命中已不再自动开启任何东西，只喂候选提示。'
+  + '只用于规则、长期约定与判据这类'
   + '「没人想起来搜也必须生效」的记忆；事实、参考与案例留作按需检索。'
   + 'When earlier context may be relevant, call memory_search to recall it — reviewable memories '
   + '相关历史上下文可用 memory_search 检索；被隔离的记录不进检索。'
@@ -195,6 +286,9 @@ const GUIDANCE =
   + '所有记忆均为明文，可用 memory_list 查看；memory_forget 删除一条。'
   + 'Approved + injected memories of the CURRENT session workspace are every-turn injected too. '
   + '已审核 + 常驻注入开关打开的工作区记忆也会每轮注入（按当前会话工作区路由）。'
+  + 'When the library grows, call memory_sweep for a read-only health check (stale records with reasons, '
+  + 'long-unused ones, candidates that keep being retrieved without being pinned, and budget usage). '
+  + '库变大之后用 memory_sweep 做只读体检——失效记录（带原因）、久未命中、被反复检索却未常驻的候选、以及预算占用。'
 
 // 0.5.1：`memory:recall` provider 可经 AssembleContext.agent 拿到当前会话
 // 的 header.cwd——注入 = global + 当前会话工作区的 approved+injected
@@ -203,6 +297,8 @@ const GUIDANCE =
 // 0.5.2：注入经摘要化 + 预算截断（renderInjection，纯函数）防上下文膨胀。
 // 0.9.0：装不下的条目不再是无声丢弃——末尾追加一行预算诊断（omittedNotice），
 // 报出被挡在外面的 id；它只在有出局时出现，清理干净即消失。
+// 0.11.1：返回值经 neutralizeBraces 中和字面 `{{`——严格插值下它会抛错，让该会话的
+// 全部模型请求一起失败（机制见 injection.ts 的 neutralizeBraces）。
 function recallText(memory: MemoryEngine, projectCwd: string | undefined, budget: number | null, summaryChars: number): string {
   const rendered = renderInjection(memory.recallRecords(projectCwd), budget, summaryChars)
   const parts: string[] = []
@@ -212,13 +308,22 @@ function recallText(memory: MemoryEngine, projectCwd: string | undefined, budget
   // 全部出局（lines 为空）时诊断照出——那正是最该报的情形
   const notice = omittedNotice(rendered)
   if (notice !== '') parts.push(notice)
+  // 0.12.0：新失效（稀有，出现即值得看一眼）与候选（该不该钉的待办）。
+  // 两者都不占预算；候选必须走到眼前，因为判断者就是读这段上下文的模型自己。
+  const stale = staleNotice(memory.lastSweepReport?.stale ?? [])
+  if (stale !== '') parts.push(stale)
+  const candidates = candidateNotice(memory.candidates(projectCwd))
+  if (candidates !== '') parts.push(candidates)
   // ① 索引行：给出「库里还有什么、按什么去搜」（不占预算、长度常数级）
   const index = indexNotice(memory.indexCandidates(projectCwd))
   if (index !== '') parts.push(index)
   // ④-B：子项目索引（有才出、不占预算）——补「不知道存在」这个检索的结构性盲区
   const neighbors = neighborNotice(memory.neighborsOf(projectCwd))
   if (neighbors !== '') parts.push(neighbors)
-  return parts.join('\n')
+  // 中和整个注入副本，而不是在各子行内部：四条子路径（注入行 / 预算诊断 / 索引行 /
+  // 子项目索引）在这里唯一汇合，一处即全覆盖，将来新增子行也不必记得各自中和。
+  // 这四行都承载模型或用户可写的文本——记忆正文、关键词、子项目目录名。
+  return neutralizeBraces(parts.join('\n'))
 }
 
 /** 从组装上下文取当前 agent 会话的工作区 cwd（AssembleContext.agent 由 dsh-agent 声明合并提供）。 */
@@ -327,7 +432,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         additionalProperties: false,
         description: 'Optional validity anchor: bind this memory to a probeable environment value so it auto-expires when that value changes. Use only for facts that depend on the environment (tool behaviour under a specific version, config decided by an env var). 可选锚点：把记忆绑到可探测的环境值，值变了自动失效。只用于「随环境变化的事实」。',
         properties: {
-          kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version'], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version.' },
+          kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version', 'path-exists'], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version; path-exists = a path that should still exist (`name` = the path, `value` = `present` or `absent`).' },
           name: { type: 'string', description: 'For kind=env: the variable name.' },
           value: { type: 'string', required: true, description: 'The value probed at write time.' },
         },
@@ -346,7 +451,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         // 参数已由 tool schema 校验，这里的窄化只为过类型
         ...args.anchor === undefined
           ? {}
-          : { anchor: args.anchor as { kind: 'env' | 'tool-list' | 'self-version', name?: string, value: string } },
+          : { anchor: args.anchor as { kind: 'env' | 'tool-list' | 'self-version' | 'path-exists', name?: string, value: string } },
       }, execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Save memory', 'other', args.content),
@@ -354,21 +459,28 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_list',
-    description: 'List every stored memory, optionally filtered by namespace, status, or injected switch. Every memory is plaintext and inspectable. 列出全部记忆，可按 namespace/status/injected 过滤；均为明文可查。',
+    description: 'List every stored memory, optionally filtered by namespace, status, injected switch, or update time. Every memory is plaintext and inspectable. 列出全部记忆，可按 namespace/status/injected/更新时间过滤；均为明文可查。',
     parameters: {
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
       status: { type: 'string', enum: ['suggested', 'approved'], description: 'Restrict to one review status. 限定审核状态（suggested=待审核 / approved=已审核）.' },
       injected: { type: 'boolean', description: 'Restrict by the persistent-injection switch. 按常驻注入开关过滤.' },
+      after: { type: 'string', description: 'Only memories updated at/after this time: `YYYY-MM-DD`, or a relative form like `7d` / `30d`. 只返回此后更新过的记忆（`YYYY-MM-DD`，或相对形式 `7d` / `30d`）.' },
+      before: { type: 'string', description: 'Only memories updated at/before this time (same forms as `after`). 只返回此前更新过的记忆（写法同 after）.' },
     },
     output: {
       schema: { type: 'array', items: RECORD_SCHEMA },
       render: (_args, value) => renderJson(value),
     },
     execute(args, exec) {
+      const now = Date.now()
+      const after = parseTimeFilter(args.after, now)
+      const before = parseTimeFilter(args.before, now)
       return memory.list({
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.injected === undefined ? {} : { injected: args.injected },
+        ...after === undefined ? {} : { after },
+        ...before === undefined ? {} : { before },
       }, execProjectCwd(exec)).then(records => records.map(recordValue))
     },
     presentCall: () => present('List memories', 'read'),
@@ -573,18 +685,26 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
       content: { type: 'string', description: 'New content; omit to keep current. 新内容；省略则保留现有内容.' },
       keywords: { type: 'array', items: { type: 'string' }, description: 'New keywords; omit to keep current. 新关键词；省略则保留现有.' },
-      injected: { type: 'boolean', description: 'Set or clear the persistent-injection switch; omit to keep the current value. Setting it records a deliberate decision — the memory stops being auto-promoted or auto-demoted. See memory_save for what deserves residency. 设置或清除常驻注入开关；省略则保持原值。给值即视为有意决定——此后不受自动升降影响。何时该常驻见 memory_save。' },
+      supersedes: { type: 'string', description: 'Mark the memory with this id as superseded by the current one (the current record is unchanged; only the other gets the void mark). 把该 id 指向的记忆标成「被本条取代」——本条不变，只写对方的作废标记。与 content / retract 互斥。' },
+      retract: { type: 'string', description: 'Retract this memory: give a reason and it is marked void (content kept, no longer injected, still searchable). 撤回本条：给一个原因即标记作废——内容保留、不再进注入，检索仍可检回。与 content / supersedes 互斥。' },
+      injected: { type: 'boolean', description: 'Set or clear the persistent-injection switch; omit to keep the current value. Setting it records a deliberate decision — the memory stops being auto-demoted (repeated hits no longer promote anything). See memory_save for what deserves residency. 设置或清除常驻注入开关；省略则保持原值。给值即视为有意决定——此后不受自动降级影响（反复命中已不再自动开启任何东西）。何时该常驻见 memory_save。' },
     },
     output: {
       schema: RECORD_SCHEMA,
       render: (_args, value) => renderJson(value),
     },
     execute(args, exec) {
-      return memory.update(args.id as never, {
+      const cwd = execProjectCwd(exec)
+      const id = args.id as never
+      // 三种动作互斥，按 retract > supersedes > update 的次序取第一个（与工具描述一致）：
+      // 前两个是「标状态」，第三个才是「改内容」。同时给多个时以更重的动作为准。
+      if (args.retract !== undefined) return memory.retract(id, args.retract, cwd).then(recordValue)
+      if (args.supersedes !== undefined) return memory.supersede(id, args.supersedes as never, cwd).then(recordValue)
+      return memory.update(id, {
         ...args.content === undefined ? {} : { content: args.content },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
         ...args.injected === undefined ? {} : { injected: args.injected },
-      }, execProjectCwd(exec)).then(recordValue)
+      }, cwd).then(recordValue)
     },
     presentCall: args => present('Update memory', 'other', args.id),
   }))
@@ -603,5 +723,19 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return memory.setStatus(args.id as never, 'approved', execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Confirm memory', 'other', args.id),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'memory_sweep',
+    description: 'Read-only health check: lists stale memories (with the reason), long-unused non-resident ones, candidates that keep being retrieved without being pinned, and how much of the injection budget the resident set takes. Changes nothing. 只读体检：列出失效的记忆（带原因）、久未被检索命中的非常驻记录、被反复检索却未常驻的候选，以及常驻占用了多少注入预算。不修改任何状态——最坏情况是报告不准，而不是误改内容。',
+    parameters: {},
+    output: {
+      schema: SWEEP_SCHEMA,
+      render: (_args, value) => renderJson(value),
+    },
+    execute(_args, exec) {
+      return memory.sweep(execProjectCwd(exec))
+    },
+    presentCall: () => present('Sweep memory', 'other', 'read-only'),
   }))
 }
