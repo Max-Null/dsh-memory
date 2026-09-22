@@ -56,6 +56,11 @@ interface MemoryToolRecord {
    * `..` / `../..` = 上级工作区。
    */
   scope?: string
+  /**
+   * 有效性锚点（0.12.1 起投影）：这条记忆跟着哪个环境值走。看不见它就无从判断该改还是该清
+   * ——`memory_update` 的 `anchor` 参数写对了没有，只能靠它回读。
+   */
+  anchor?: { kind: 'env' | 'tool-list' | 'self-version' | 'path-exists', name?: string, value: string }
 }
 
 interface MemoryToolHit {
@@ -105,6 +110,16 @@ const RECORD_SCHEMA = {
     hitCount: { type: 'number' },
     quarantined: { type: 'boolean' },
     scope: { type: 'string', description: '来源工作区（④-A）：缺省 = 当前会话工作区；`..` / `../..` = 上级工作区。' },
+    anchor: {
+      type: 'object',
+      additionalProperties: false,
+      description: '有效性锚点：这个值一变，这条记忆就自动失效。`memory_update` 传新值即改写（当场重新校验），传 `null` 即清除。',
+      properties: {
+        kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version', 'path-exists'] },
+        name: { type: 'string' },
+        value: { type: 'string', required: true },
+      },
+    },
   },
 } as const
 
@@ -214,6 +229,7 @@ function recordValue(record: MemoryRecord): MemoryToolRecord {
     hitCount: record.hitCount,
     ...record.quarantined === true ? { quarantined: true } : {},
     ...record.scope === undefined ? {} : { scope: record.scope },
+    ...record.anchor === undefined ? {} : { anchor: record.anchor },
   }
 }
 
@@ -680,7 +696,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: 'memory_update',
-    description: 'Update the content, keywords or persistent-injection switch of one stored memory (e.g. correcting stale facts). The record keeps its review status; content that looks like a credential quarantines it instead. 修改一条记忆的内容、关键词或常驻注入开关（如修正过时信息）。改动后记忆保持原有审核状态；若新内容命中危险规则则转为隔离。',
+    description: 'Update the content, keywords, persistent-injection switch or validity anchor of one stored memory (e.g. correcting stale facts, or re-anchoring a memory whose anchor no longer holds). The record keeps its review status; content that looks like a credential quarantines it instead. 修改一条记忆的内容、关键词、常驻注入开关或有效性锚点（如修正过时信息、把失效的锚点改对）。改动后记忆保持原有审核状态；若新内容命中危险规则则转为隔离。',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
       content: { type: 'string', description: 'New content; omit to keep current. 新内容；省略则保留现有内容.' },
@@ -688,6 +704,21 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       supersedes: { type: 'string', description: 'Mark the memory with this id as superseded by the current one (the current record is unchanged; only the other gets the void mark). 把该 id 指向的记忆标成「被本条取代」——本条不变，只写对方的作废标记。与 content / retract 互斥。' },
       retract: { type: 'string', description: 'Retract this memory: give a reason and it is marked void (content kept, no longer injected, still searchable). 撤回本条：给一个原因即标记作废——内容保留、不再进注入，检索仍可检回。与 content / supersedes 互斥。' },
       injected: { type: 'boolean', description: 'Set or clear the persistent-injection switch; omit to keep the current value. Setting it records a deliberate decision — the memory stops being auto-demoted (repeated hits no longer promote anything). See memory_save for what deserves residency. 设置或清除常驻注入开关；省略则保持原值。给值即视为有意决定——此后不受自动降级影响（反复命中已不再自动开启任何东西）。何时该常驻见 memory_save。' },
+      anchor: {
+        description: 'Set, replace, or clear the validity anchor; omit to keep the current one. A new value is re-probed immediately: if it holds, a stale mark left by the old anchor is dropped; if it fails, the memory is marked stale and unpinned at once. `null` clears the anchor together with the stale mark that anchor caused. 设置 / 改写 / 清除有效性锚点；省略则保持原值。给值**当场重新探测**——新锚点成立就撤掉旧锚点留下的失效标记，不成立就立刻标失效并撤下常驻；给 `null` 清除锚点，并连同它带来的失效标记一起清。',
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version', 'path-exists'], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version; path-exists = a path that should still exist (`name` = the path, `value` = `present` or `absent`).' },
+              name: { type: 'string', description: 'For kind=env: the variable name. For kind=path-exists: the path (relative paths resolve against the session workspace).' },
+              value: { type: 'string', required: true, description: 'The value probed at write time.' },
+            },
+          },
+          { type: 'null' },
+        ],
+      },
     },
     output: {
       schema: RECORD_SCHEMA,
@@ -704,6 +735,10 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         ...args.content === undefined ? {} : { content: args.content },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
         ...args.injected === undefined ? {} : { injected: args.injected },
+        // 参数已由 tool schema 校验（对象或 null），这里的窄化只为过类型
+        ...args.anchor === undefined
+          ? {}
+          : { anchor: args.anchor as { kind: 'env' | 'tool-list' | 'self-version' | 'path-exists', name?: string, value: string } | null },
       }, cwd).then(recordValue)
     },
     presentCall: args => present('Update memory', 'other', args.id),

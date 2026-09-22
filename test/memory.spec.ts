@@ -9,6 +9,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
 import * as plugin from '../src/index.ts'
 import type { MemoryConfig } from '../src/engine.ts'
+import { SELF_VERSION } from '../src/self.ts'
 
 async function setup(extra: MemoryConfig = {}) {
   const ctx = new Context()
@@ -572,6 +573,78 @@ describe('dsh-memory plugin', () => {
     expect(report.candidates.map(item => item.id)).toContain(String(candidate.id))
   })
 
+  it('0.12.1: sweep 写回最近一次报告——注入里那句失效提示据此刷新', async () => {
+    const { ctx } = await setup()
+    const doomed = await ctx.memory.remember({ content: 'alpha doomed', keywords: ['alpha'] })
+    await ctx.memory.retract(doomed.id, '记错了')
+
+    expect(ctx.memory.lastSweepReport).toBeUndefined()      // 没体检过 → 没有那一行
+    const first = await ctx.memory.sweep()
+    expect(ctx.memory.lastSweepReport).toBe(first)
+    expect(ctx.memory.lastSweepReport?.stale.map(item => item.id)).toContain(String(doomed.id))
+
+    // 记录删掉之后再体检：报告跟着变。旧写法只在会话启动维护里赋值，于是那句提示会一直
+    // 挂着一条已经不存在的记录，直到会话结束。
+    await ctx.memory.forget(doomed.id)
+    const second = await ctx.memory.sweep()
+    expect(ctx.memory.lastSweepReport).toBe(second)
+    expect(ctx.memory.lastSweepReport?.stale).toHaveLength(0)
+  })
+
+  it('0.12.1: update 给锚点当场校验——不成立即标失效，改对即复活', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({
+      content: 'alpha version fact', keywords: ['alpha'], injected: true,
+    })
+
+    // 不成立：当场标失效并撤下常驻（与启动维护的失效分支同一组字段）
+    const broken = await ctx.memory.update(record.id, {
+      anchor: { kind: 'self-version', value: '0.0.1-not-this-build' },
+    })
+    expect(broken.stale).toBe(true)
+    expect(broken.staleReason).toContain('self-version')
+    expect(broken.injected).toBe(false)
+
+    // 改成成立的值：同一条记录复活，不必等下次会话维护
+    const fixed = await ctx.memory.update(record.id, {
+      anchor: { kind: 'self-version', value: SELF_VERSION },
+    })
+    expect(fixed.stale).not.toBe(true)
+    expect(fixed.staleReason).toBeUndefined()
+  })
+
+  it('0.12.1: update 给 anchor: null 清除锚点，只清它标的失效', async () => {
+    const { ctx } = await setup()
+    const anchored = await ctx.memory.remember({ content: 'alpha anchored', keywords: ['alpha'] })
+    await ctx.memory.update(anchored.id, {
+      anchor: { kind: 'self-version', value: '0.0.1-not-this-build' },
+    })
+
+    const cleared = await ctx.memory.update(anchored.id, { anchor: null })
+    expect(cleared.anchor).toBeUndefined()
+    expect(cleared.stale).not.toBe(true)          // 约束没了，它标的失效也不该留着
+    expect(cleared.staleReason).toBeUndefined()
+
+    // 撤回标的失效不是「锚点造成」的——清锚点不该顺手抹掉它
+    const voided = await ctx.memory.remember({ content: 'alpha voided', keywords: ['alpha'] })
+    await ctx.memory.retract(voided.id, '当时记错了')
+    const untouched = await ctx.memory.update(voided.id, { anchor: null })
+    expect(untouched.stale).toBe(true)
+    expect(untouched.staleReason).toBe('已撤回：当时记错了')
+  })
+
+  it('0.12.1: update 省略 anchor 时连失效标记一起保持', async () => {
+    const { ctx } = await setup()
+    const record = await ctx.memory.remember({ content: 'alpha plain', keywords: ['alpha'] })
+    await ctx.memory.update(record.id, {
+      anchor: { kind: 'self-version', value: '0.0.1-not-this-build' },
+    })
+
+    const after = await ctx.memory.update(record.id, { content: 'alpha plain v2' })
+    expect(after.anchor?.kind).toBe('self-version')
+    expect(after.stale).toBe(true)                // 省略 = 保持原值，连状态一起
+  })
+
   it('0.12.0: supersede 把目标标成被取代，取代者自身不动', async () => {
     const { ctx } = await setup()
     const older = await ctx.memory.remember({ content: 'alpha old rule', keywords: ['alpha'] })
@@ -799,6 +872,37 @@ describe('dsh-memory plugin', () => {
     const update = ctx.tools.get('memory_update')
     const off = await update?.execute?.({ id: String(saved.id), injected: false }, {} as never) as { injected: boolean }
     expect(off.injected).toBe(false)
+  })
+
+  it('0.12.1: memory_update 的 anchor 参数过工具 schema——对象与 null 两种形态都收', async () => {
+    const { ctx } = await setup()
+    const save = ctx.tools.get('memory_save')
+    const saved = await save?.execute?.({
+      content: 'tool-level anchor',
+      anchor: { kind: 'self-version', value: '0.0.1-not-this-build' },
+    }, {} as never) as { id: string, anchor?: { kind: string } }
+    expect(saved.anchor?.kind).toBe('self-version')
+
+    const update = ctx.tools.get('memory_update')
+    // 对象形态：改成一个成立的值 → 当场复活（参数由 schema 收下，引擎按新锚点判定）
+    const fixed = await update?.execute?.({
+      id: String(saved.id),
+      anchor: { kind: 'self-version', value: SELF_VERSION },
+    }, {} as never) as { stale?: boolean, anchor?: { kind: string } }
+    expect(fixed.anchor?.kind).toBe('self-version')
+    expect(fixed.stale).not.toBe(true)
+
+    // null 形态：清除锚点——`oneOf: [object, null]` 的 null 分支必须真的过校验
+    const cleared = await update?.execute?.({
+      id: String(saved.id),
+      anchor: null,
+    }, {} as never) as { anchor?: { kind: string } }
+    expect(cleared.anchor).toBeUndefined()
+
+    // 反向：非法形态必须被拒。它同时证明上面的 execute 真的过了参数校验，
+    // 而不是「照单全收」——否则前两条断言只测到了引擎、没测到 schema。
+    await expect(async () => update?.execute?.({ id: String(saved.id), anchor: 'garbage' }, {} as never))
+      .rejects.toThrow(/invalid arguments/i)
   })
 
   it('2026-09-15: 自动升的常驻在长期未命中后降级——记忆不会无限累积', async () => {

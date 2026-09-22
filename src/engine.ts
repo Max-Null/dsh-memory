@@ -162,6 +162,14 @@ export interface MemoryPatch {
    * `injectedAuto: false`，此后不受自动升降影响）；省略则保持原值。
    */
   injected?: boolean
+  /**
+   * 有效性锚点（0.12.1）：省略保持原值，给值改写，给 `null` 清除。
+   *
+   * 给值时**当场校验一次**并同步 `stale`（成立即复活、不成立即标失效、探测不到则不动）——
+   * 改写锚点的意图就是「让它重新被判定」，等到下次会话维护再判定会留下一个说不清的空窗
+   * （改了锚点却仍显示失效）。清除锚点时连「因该锚点而标的失效」一起清。
+   */
+  anchor?: MemoryAnchor | null
 }
 
 export interface MemoryHit {
@@ -508,6 +516,9 @@ export class MemoryEngine extends Service {
   /**
    * 最近一次体检结果（只读）。未跑过时为 `undefined`——注入侧据此决定要不要报那一行，
    * 它只在真有新失效时出现，稀有所以不构成噪音。
+   *
+   * **每次 `sweep()`（含工具调用）都刷新它**（0.12.1）。此前只在会话启动维护里赋值，于是
+   * 那句提示在整个会话内不再变化，可能一直挂着早已被删掉的记录。
    */
   get lastSweepReport(): SweepReport | undefined {
     return this.lastSweep
@@ -844,7 +855,7 @@ export class MemoryEngine extends Service {
 
     const resident = this.recallRecords(projectCwd)
     const rendered = renderInjection(resident, this.config.injectionBudget ?? DEFAULT_INJECTION_BUDGET, summaryChars)
-    return {
+    const report: SweepReport = {
       stale,
       longUnused,
       candidates,
@@ -857,6 +868,11 @@ export class MemoryEngine extends Service {
         omitted: rendered.omitted,
       },
     }
+    // 每次体检都写回最近一次结果（0.12.1）：注入侧那句「本次校验发现 N 条失效」读的就是它。
+    // 原先只有会话启动维护会赋值，于是调用 `memory_sweep` 刷新不了它——报告里挂着早已被删掉
+    // 的记录，整个会话内不再变化。（这条只写实例字段，不影响「只读」的承诺：不落盘、不改记忆。）
+    this.lastSweep = report
+    return report
   }
 
   /**
@@ -1140,7 +1156,9 @@ export class MemoryEngine extends Service {
       if (staled > 0) this.ctx.logger?.info?.(`dsh-memory: 锚点校验更新 ${staled} 条`)
       // 体检（0.12.0）：只读，产物存进实例字段，供注入侧报「本次校验发现的新失效」。
       // 它在 try 内——报告没有记忆本身重要，失败由下面的 catch 兜住、不阻断启动。
-      this.lastSweep = await this.sweep(projectCwd)
+      // 写回由 `sweep()` 自己做（0.12.1），这里不再赋值——于是手工调用 `memory_sweep`
+      // 也能刷新注入里那句提示。
+      await this.sweep(projectCwd)
     } catch (error) {
       this.ctx.logger?.warn?.(`dsh-memory: 启动维护失败（不影响使用）：${String(error)}`)
     }
@@ -1385,6 +1403,17 @@ export class MemoryEngine extends Service {
     return this.writeScope(projectCwd, () => this.verifyAnchorsInner(probes, projectCwd))
   }
 
+  /**
+   * 锚点失效的原因文案：`verifyAnchorsInner` 与 `update` 的锚点改写共用一处。
+   *
+   * 共用不是为省几行——「改写或清除锚点时顺带清失效」要认得出「这条失效是本锚点标的」，
+   * 两处生成的文案必须逐字相同；认错就会把撤回、被取代标的失效一起抹掉。
+   */
+  private static anchorStaleReason(anchor: MemoryAnchor): string {
+    const label = `${anchor.kind}${anchor.name === undefined ? '' : `:${anchor.name}`}`
+    return `${label} 声明为 ${anchor.value}，当前不符`
+  }
+
   /** {@link verifyAnchors} 的实现体；必须经 `writeScope` 进入。 */
   private async verifyAnchorsInner(probes: AnchorProbes, projectCwd?: string): Promise<number> {
     const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
@@ -1399,13 +1428,12 @@ export class MemoryEngine extends Service {
         const holds = anchorHolds(block.anchor, probes)
         if (holds === undefined) continue          // 未校验：探测不到就不动
         if ((block.stale === true) === !holds) continue   // 状态没变
-        const label = `${block.anchor.kind}${block.anchor.name === undefined ? '' : `:${block.anchor.name}`}`
         const updated: StoredBlock = holds
           ? { ...block, stale: false, staleReason: undefined }
           : {
               ...block,
               stale: true,
-              staleReason: `${label} 声明为 ${block.anchor.value}，当前不符`,
+              staleReason: MemoryEngine.anchorStaleReason(block.anchor),
               injected: false,
               injectedAuto: false,
             }
@@ -1768,7 +1796,7 @@ export class MemoryEngine extends Service {
       const status = verdict.quarantined ? 'suggested' : normalized.status
       // 常驻注入（2026-09-18）：显式给值即接管；未审核或已隔离一律不注入（与自动升级同一门槛）
       const injected = status === 'approved' ? patch.injected ?? normalized.injected : false
-      return {
+      const patched: StoredBlock = {
         ...block,
         status,
         injected,
@@ -1781,6 +1809,33 @@ export class MemoryEngine extends Service {
         ...(patch.keywords === undefined ? {} : { keywords }),
         updatedAt: Date.now(),
       }
+      // 锚点（0.12.1）：省略 → 连 stale 一起保持原值
+      if (patch.anchor === undefined) return patched
+      // 给 `null` → 清除锚点，并连「因它而标的失效」一起清。别的来源（撤回、被取代）原因文案
+      // 不同，不动——「解除约束」与「撤销作废」是两件事，不能顺手一起抹掉。
+      if (patch.anchor === null) {
+        const fromAnchor = block.anchor !== undefined
+          && block.staleReason === MemoryEngine.anchorStaleReason(block.anchor)
+        return {
+          ...patched,
+          anchor: undefined,
+          ...fromAnchor ? { stale: false, staleReason: undefined } : {},
+        }
+      }
+      // 给值 → 当场校验一次并同步 stale；下面的字段组与 `verifyAnchorsInner` 的失效分支一致
+      const holds = anchorHolds(patch.anchor, this.anchorProbes(projectCwd))
+      if (holds === true) return { ...patched, anchor: patch.anchor, stale: false, staleReason: undefined }
+      if (holds === false) {
+        return {
+          ...patched,
+          anchor: patch.anchor,
+          stale: true,
+          staleReason: MemoryEngine.anchorStaleReason(patch.anchor),
+          injected: false,
+          injectedAuto: false,
+        }
+      }
+      return { ...patched, anchor: patch.anchor }   // 探测不到：不动 stale（未校验 ≠ 失效）
     }
     // 注入位变化单独发一条事件：客户端与面板据此刷新「常驻」列，只发 status 会漏掉它
     const publish = (previous: StoredBlock, updated: StoredBlock): MemoryRecord => {

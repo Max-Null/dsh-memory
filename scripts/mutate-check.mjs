@@ -60,6 +60,22 @@ const MUTATIONS = [
       + ' ? { injected: true, injectedAuto: true } : {}),',
     guard: '命中次数不再自动改变注入状态（只进候选）',
   },
+  {
+    name: '体检写回（0.12.1）',
+    file: join(ROOT, 'src', 'engine.ts'),
+    spec: 'test/memory.spec.ts',
+    needle: '    this.lastSweep = report',
+    mutant: '',
+    guard: '调用 sweep 会刷新注入侧读的那份报告（不再只有会话启动维护写它）',
+  },
+  {
+    name: '改锚点当场校验（0.12.1）',
+    file: join(ROOT, 'src', 'engine.ts'),
+    spec: 'test/memory.spec.ts',
+    needle: '      if (patch.anchor === undefined) return patched',
+    mutant: '      return patched',
+    guard: 'update 带 anchor 时必须真的改写并当场校验（含 null 清除）',
+  },
 ]
 
 const digest = text => createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12)
