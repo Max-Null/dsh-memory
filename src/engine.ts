@@ -19,7 +19,7 @@ import { bm25FieldScores, cosineSimilarity, rrfFuse } from './bm25.ts'
 import { parsePromptFile, scanPromptDir, writePromptFile, type PromptFile } from './prompt-files.ts'
 import { detectSensitive } from './quarantine.ts'
 import { SELF_VERSION } from './self.ts'
-import { anchorHolds } from './anchors.ts'
+import { ANCHOR_KINDS, anchorHolds } from './anchors.ts'
 import type { AnchorProbes, MemoryAnchor } from './anchors.ts'
 import {
   DEFAULT_INJECTION_BUDGET,
@@ -302,6 +302,18 @@ export interface SweepReport {
   autoDemoteCandidates: AutoDemoteCandidate[]
   /** 常驻与注入预算的占用：总数 / 实际进注入 / 预算（无限制时不出现）/ 被挤掉几条。 */
   resident: { total: number, injected: number, budget: number | undefined, omitted: number }
+  /**
+   * 数据完整性声明（门二，2026-09-25）：这次体检**实际读到了哪些存储**。
+   *
+   * 加它是因为「读不到就说读不到，比读到了但少一半更有价值」：project 侧打不开时，前面
+   * 几项会给出一个**看起来正常但偏小**的数字，而没有任何信号说明它少了什么。宁可报告
+   * 显式写「未纳入」，也不要让人对着一个残缺的全景做判断。
+   *
+   * - `included`：project 侧已纳入；
+   * - `absent`：本次没有工作区上下文（`projectCwd` 为空），不是故障；
+   * - `unreadable`：**尝试过但打不开**——此时 `projectError` 给出原因，前几项的数字只覆盖 global。
+   */
+  coverage: { project: 'included' | 'absent' | 'unreadable', projectError?: string }
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -353,7 +365,13 @@ interface StoredBlock {
   meta?: PromptMetaIndex
 }
 
-const blockSchema = z.object({
+/**
+ * 存储块的 schema（门三的判据来源，2026-09-25）。
+ *
+ * **导出是为了让离线扫描器（`scripts/check-memory-files.mjs`）用它而不是自己再写一套**——
+ * 两份判据会漂移，而漂移的方向恰好是「扫描器说没事、打开时炸」这种最难查的形态。
+ */
+export const blockSchema = z.object({
   namespace: z.enum(['global', 'project']),
   status: z.enum(['suggested', 'approved', 'auto', 'suggest']),
   injected: z.boolean().optional(),
@@ -363,7 +381,7 @@ const blockSchema = z.object({
   source: z.enum(['agent', 'human']).optional(),
   injectedAuto: z.boolean().optional(),
   anchor: z.object({
-    kind: z.enum(['env', 'tool-list', 'self-version']),
+    kind: z.enum(ANCHOR_KINDS),
     name: z.string().optional(),
     value: z.string(),
   }).optional(),
@@ -388,6 +406,17 @@ const blockSchema = z.object({
     source: z.enum(['user', 'agent']),
   }).optional(),
 })
+
+/**
+ * 把 zod 的 issue 压成一行（门一，2026-09-25）。
+ *
+ * 排查成本的大头在「从 domain 打不开倒推」——`dsh-storage-domain` 封装后的错误只给到
+ * 「哪个 domain 的哪条记录不合规」（`stored record '<id>' in table 'blocks' does not
+ * match its schema`），**说不出是哪个字段、什么值、期望什么**。这行补的就是那段。
+ */
+function describeIssues(error: z.ZodError): string {
+  return error.issues.map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')
+}
 
 /** Shared table shape; the two domains differ only by name and backend route. */
 function memorySpec(name: string) {
@@ -524,7 +553,7 @@ export class MemoryEngine extends Service {
   static inject = ['storage']
 
   private globalTable?: KvTable<string, StoredBlock>
-  /** project 域按工作区 cwd 懒打开 + 缓存（多会话并发各工作区独立）。 */
+/** project 域按工作区 cwd 懒打开 + 缓存（多会话并发各工作区独立）。 */
   private projectTables = new Map<string, KvTable<string, StoredBlock>>()
   /** 子项目发现缓存（④-B 2026-09-19）：key = 工作区路径；值 = 其直接子目录中带记忆的（按条数降序）。 */
   private readonly neighborCache = new Map<string, Array<{ name: string, count: number }>>()
@@ -532,6 +561,12 @@ export class MemoryEngine extends Service {
   private readonly neighborOpenings = new Map<string, Promise<Array<{ name: string, count: number }>>>()
   /** 进行中的工作区打开（key → promise）：并发调用复用同一次，见 {@link projectTableFor}。 */
   private readonly projectOpenings = new Map<string, Promise<KvTable<string, StoredBlock>>>()
+  /**
+   * 打不开的工作区表（门二，2026-09-25）：key = 规范化 cwd，值 = 失败描述。
+   *
+   * 成功的打开会清掉对应项——「现在好没好」比「曾经坏过」更有用。见 {@link projectTableFor}。
+   */
+  private readonly projectOpenErrors = new Map<string, string>()
   private projectFacilities = new Map<string, DomainFacility>()
   /** backend 只注册一次（registry 重名抛 duplicate；reload 清缓存后不得重复注册）。 */
   private registeredProjectBackends = new Set<string>()
@@ -613,8 +648,7 @@ export class MemoryEngine extends Service {
    * 普遍把预热失败当无碍吞掉，于是表现为「这一轮工作区记忆缺席」。所以这里复用
    * 进行中的那次打开。
    */
-  private async projectTableFor(projectCwd?: string): Promise<KvTable<string, StoredBlock> | undefined> {
-    if (projectCwd === undefined || projectCwd === '') return undefined
+  private async projectTableFor(projectCwd?: string): Promise<KvTable<string, StoredBlock> | undefined> {    if (projectCwd === undefined || projectCwd === '') return undefined
     const key = join(projectCwd) // 规范化（Windows 大小写/尾斜杠）
     const cached = this.projectTables.get(key)
     if (cached !== undefined) return cached
@@ -623,15 +657,26 @@ export class MemoryEngine extends Service {
     const opening = this.openProjectTable(key)
     this.projectOpenings.set(key, opening)
     try {
-      return await opening
+      const table = await opening
+      this.projectOpenErrors.delete(key)
+      return table
+    } catch (error) {
+      // 门二（2026-09-25 故障的直接教训）：打不开要说出来。此前这里让异常上抛、由调用方
+      // `catch(() => undefined)` 吞掉，于是一条不合规记录能让**整个工作区的记忆静默消失**
+      // ——用户只在「注入数 184 → 30」这种恰好被注意到的数字上才发现（154 条 project
+      // 记忆全部不可见，数据一条没丢，丢的是可读性）。
+      //
+      // 这里仍然上抛：调用方的 undefined 语义不变（它们按「没有 project 部分」继续），
+      // 变的只是**失败被记下来了**，`memory_sweep` 据此声明数据完整性。
+      this.projectOpenErrors.set(key, error instanceof Error ? error.message : String(error))
+      throw error
     } finally {
       this.projectOpenings.delete(key)
     }
   }
 
   /** {@link projectTableFor} 的实际打开步骤；并发去重由调用方负责。 */
-  private async openProjectTable(key: string): Promise<KvTable<string, StoredBlock>> {
-    const backendName = this.projectBackendName(key)
+  private async openProjectTable(key: string): Promise<KvTable<string, StoredBlock>> {    const backendName = this.projectBackendName(key)
     // 0.5.2：旧实现 domain 名多一层 memory_project_ 前缀（文件名双重前缀，
     // 且 unit 文件头 name 同为旧名）。打开前统一迁移到规范名：
     // ①规范名已存在 + 头为旧名（0.5.2 首版只 rename 未改 header 的中间态）→ 改写头；
@@ -899,11 +944,20 @@ export class MemoryEngine extends Service {
 
     const resident = this.recallRecords(projectCwd)
     const rendered = renderInjection(resident, this.config.injectionBudget ?? DEFAULT_INJECTION_BUDGET, summaryChars)
+    // 完整性声明（门二）：上面那些读取都经过 `projectTableFor`，打不开的话它已把原因记在
+    // `projectOpenErrors` 里。这里只判断「该不该有 project 侧」与「有没有失败记录」——
+    // 没有工作区上下文是 `absent`（不是故障），有上下文又打不开才是 `unreadable`。
+    const projectKey = projectCwd === undefined || projectCwd === '' ? undefined : join(projectCwd)
+    const projectError = projectKey === undefined ? undefined : this.projectOpenErrors.get(projectKey)
+    const coverage: SweepReport['coverage'] = projectKey === undefined
+      ? { project: 'absent' }
+      : projectError === undefined ? { project: 'included' } : { project: 'unreadable', projectError }
     const report: SweepReport = {
       stale,
       longUnused,
       candidates,
       autoDemoteCandidates,
+      coverage,
       resident: {
         total: resident.length,
         injected: rendered.lines.length,
@@ -962,6 +1016,36 @@ export class MemoryEngine extends Service {
       if (block !== undefined) return { table, block }
     }
     return undefined
+  }
+
+  /**
+   * **唯一**允许写块的地方（门一，2026-09-25）：写前跑一次存储 schema，不合格就抛。
+   *
+   * 为什么要有这道门：写入路径此前**完全不校验**，而不合规的记录会让整个 domain 在
+   * **下次打开时**打不开——`dsh-storage-domain` 逐条校验，一条不合格即整体失败。于是故障
+   * 被推迟到重启之后，表现为「整个工作区的记忆消失」：2026-09-25 那次 154 条 project 记忆
+   * 全部不可见（数据一条没丢，丢的是可读性），链条正是**写入放行 → 加载才炸 → 失败还被吞**。
+   * 三层里任何一层立住都不会发生，这一道补的是第一层。
+   *
+   * 失败**抛错**而不是静默降级：降级只是把「写入放行」的坑换到别处，且调用方看不到原因。
+   * 错误里带上 zod 的 issue（哪个字段、什么值、期望什么）。
+   *
+   * @param table - 目标表（global 或某个工作区）。
+   * @param id - 记录 id。
+   * @param block - 待写入的块；校验通过后写回 `parsed.data`，保证 strip 与默认值行为与读路径一致。
+   */
+  private async putBlock(
+    table: KvTable<string, StoredBlock>,
+    id: string,
+    block: StoredBlock,
+  ): Promise<void> {
+    const parsed = blockSchema.safeParse(block)
+    if (!parsed.success) {
+      throw new Error(
+        `memory: refusing to store an invalid record ${id} — ${describeIssues(parsed.error)}`,
+      )
+    }
+    await table.put(id, parsed.data)
   }
 
   /**
@@ -1056,7 +1140,7 @@ export class MemoryEngine extends Service {
         ? { quarantined: true, ...verdict.reason === undefined ? {} : { quarantineReason: verdict.reason } }
         : {},
     }
-    await table.put(id, block)
+    await this.putBlock(table, id, block)
     const record = toRecord(id, block)
     this.ctx.emit('memory/changed', { operation: 'remembered', record })
     return record
@@ -1156,7 +1240,7 @@ export class MemoryEngine extends Service {
         fresh.set(String(missingRecord.id), [...vector])
         const block = missingRecord.table.get(missingRecord.id)
         if (block !== undefined) {
-          await missingRecord.table.put(missingRecord.id, { ...block, vector: [...vector] })
+          await this.putBlock(missingRecord.table, missingRecord.id, { ...block, vector: [...vector] })
         }
       }
     }
@@ -1309,7 +1393,7 @@ export class MemoryEngine extends Service {
       hitCount: (block.hitCount ?? 0) + 1,
       lastUsedAt: now,
     }
-    await table.put(id, updated)
+    await this.putBlock(table, id, updated)
   }
 
   // ── 查询日志与影响力统计（⑥ 2026-09-15）────────────────────────────────
@@ -1491,7 +1575,7 @@ export class MemoryEngine extends Service {
               injected: false,
               injectedAuto: false,
             }
-        await table.put(id, updated)
+        await this.putBlock(table, id, updated)
         this.ctx.emit('memory/changed', { operation: 'status', id: MemoryId(id), status: normalizeBlock(updated).status })
         changed += 1
       }
@@ -1572,7 +1656,7 @@ export class MemoryEngine extends Service {
           updated = { ...base, hitCount: 1 }
           stats.counted += 1
         }
-        if (updated !== undefined) await table.put(id, updated)
+        if (updated !== undefined) await this.putBlock(table, id, updated)
       }
     }
     return stats
@@ -1631,7 +1715,7 @@ export class MemoryEngine extends Service {
 
     // 先写目标、再删源：中间态里它同时存在于两处（重复好过丢失），而两次写同处一个
     // writeScope，外部看不到中间态。
-    await destination.put(id, found.block)
+    await this.putBlock(destination, id, found.block)
     await found.table.delete(id)
 
     // 继承只向上，而 global 人人可见——所以「移进 global」与「移进自己的某个祖先」都能
@@ -1719,7 +1803,7 @@ export class MemoryEngine extends Service {
       ...status === 'approved' ? { quarantined: false, quarantineReason: undefined } : {},
       updatedAt: Date.now(),
     }
-    await table.put(id, updated)
+    await this.putBlock(table, id, updated)
     const record = toRecord(id, updated)
     this.ctx.emit('memory/changed', { operation: 'status', id, status })
     return record
@@ -1757,7 +1841,7 @@ export class MemoryEngine extends Service {
       injectedAuto: false,
       updatedAt: Date.now(),
     }
-    await found.table.put(id, updated)
+    await this.putBlock(found.table, id, updated)
     const record = toRecord(id, updated)
     this.ctx.emit('memory/changed', { operation: 'injected', id, injected })
     return record
@@ -1822,7 +1906,7 @@ export class MemoryEngine extends Service {
       injectedAuto: false,
       updatedAt: Date.now(),
     }
-    await found.table.put(id, updated)
+    await this.putBlock(found.table, id, updated)
     this.ctx.emit('memory/changed', { operation: 'status', id, status: normalizeBlock(updated).status })
     return updated
   }
@@ -1907,7 +1991,7 @@ export class MemoryEngine extends Service {
     if (found === undefined) throw new Error(`cannot update unknown memory '${id}'`)
     const { table, block } = found
     const updated = applyPatch(block)
-    await table.put(id, updated)
+    await this.putBlock(table, id, updated)
     return publish(block, updated)
   }
 
@@ -2054,7 +2138,7 @@ export class MemoryEngine extends Service {
           source: file.meta.source,
         },
       }
-      await table.put(id, block)
+      await this.putBlock(table, id, block)
       changed++
     }
     for (const record of existing) {

@@ -8,6 +8,7 @@ import Storage from '@deepseek-ai/dsh-storage'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
 import * as plugin from '../src/index.ts'
+import { ANCHOR_KINDS } from '../src/anchors.ts'
 import type { MemoryConfig } from '../src/engine.ts'
 import { SELF_VERSION } from '../src/self.ts'
 
@@ -987,6 +988,85 @@ describe('dsh-memory plugin', () => {
     const fromDemote = (await ctx.memory.demoteStale()).map(item => item.id).sort()
     expect(fromSweep).toEqual(fromDemote)
     expect(fromSweep).toEqual([String(aged.id)])   // fresh 那条是显式钉的，两边都不选它
+  })
+
+  it('2026-09-25: project 侧打不开时，sweep 声明「未纳入」而不是给出偏小数字', async () => {
+    const { ctx, fiber, workspaceA } = await setup()
+    await ctx.memory.remember({ content: 'project note', namespace: 'project' }, workspaceA)
+
+    // 造一条不合规记录：domain 打开时逐条 zod 校验，**一条不合格即整个 domain 打不开**。
+    // 这正是 2026-09-25 那次故障的形态——anchor.kind 写了个 schema 不认的值，用户重启内核后
+    // 该工作区 154 条 project 记忆全部不可见（数据一条没丢，丢的是可读性）。
+    const dir = join(workspaceA, '.dsh', 'storages')
+    const file = join(dir, readdirSync(dir).find(name => name.endsWith('.json')) as string)
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, Record<string, unknown>> }
+    }
+    const firstId = Object.keys(raw.tables.blocks)[0] as string
+    raw.tables.blocks[firstId]!.anchor = { kind: 'not-a-real-kind', value: 'x' }
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+    const recordId = firstId
+
+    // 重新打开（`reload` 清表缓存，下次取表才会真的去读文件并撞上那条坏记录）
+    await ctx.memory.reload()
+    const report = await ctx.memory.sweep(workspaceA)
+
+    // 关键断言：报告**显式说明** project 侧没读到，而不是安静地少给一半数字
+    expect(report.coverage.project).toBe('unreadable')
+    expect(report.coverage.projectError).toBeTruthy()
+    // 存储层的错误消息给到「哪个 domain 的哪条记录」：
+    //   domain 'memory_project_xxx': stored record '<id>' in table 'blocks' does not match its schema
+    // 但**不含字段级原因**（哪个字段、什么值、期望什么）——那正是 `blockSchema.safeParse`
+    // 能给出、而 `dsh-storage-domain` 的封装错误给不出的。所以门二负责「有没有坏」，门三
+    // （离线扫描器，用自己的 schema）负责「坏在哪」——两道门互补，不是冗余。
+    expect(report.coverage.projectError).toContain(String(recordId))
+    expect(report.coverage.projectError).toContain('does not match its schema')
+
+    await fiber.dispose()
+  })
+
+  it('2026-09-25: project 侧读得到时，sweep 声明为 included；没有工作区上下文时是 absent', async () => {
+    const { ctx, fiber, workspaceA } = await setup()
+    await ctx.memory.remember({ content: 'healthy note', namespace: 'project' }, workspaceA)
+
+    expect((await ctx.memory.sweep(workspaceA)).coverage.project).toBe('included')
+    // 没有 cwd 不是故障——不该报成 unreadable
+    expect((await ctx.memory.sweep()).coverage.project).toBe('absent')
+
+    await fiber.dispose()
+  })
+
+  it('2026-09-25: 非法 anchor 在写入端就被拒——不等到下次打开才炸，且不落盘', async () => {
+    const { ctx, fiber, globalRoot } = await setup()
+    await ctx.memory.remember({ content: 'healthy note' })
+    const file = join(globalRoot, 'memory.json')
+    const before = readFileSync(file, 'utf8')
+
+    // 门一（2026-09-25）：写入路径此前完全不校验，非法块落盘成功、直到**下次打开**才让整个
+    // domain 打不开。这里断言它在写入端就抛，且错误里带字段级原因。
+    await expect(
+      ctx.memory.remember({ content: 'bad', anchor: { kind: 'not-a-real-kind', value: 'x' } as never }),
+    ).rejects.toThrow(/refusing to store an invalid record/)
+
+    // 关键：**不落盘**——非法块没有进文件（比对内容而不是 mtime：写失败也可能触碰文件）
+    expect(readFileSync(file, 'utf8')).toBe(before)
+
+    await fiber.dispose()
+  })
+
+  it('2026-09-25: 受控词汇表里每种 anchor kind 都能写入并读回', async () => {
+    const { ctx, fiber } = await setup()
+    // 遍历 ANCHOR_KINDS 而不是手抄四个字面量——新增 kind 时这条用例自动覆盖它，
+    // 而漏改存储 schema 会被写入端的 zod 立刻抓住（这正是 09-25 那次的根因）。
+    for (const kind of ANCHOR_KINDS) {
+      const record = await ctx.memory.remember({
+        content: `anchor kind ${kind}`,
+        anchor: { kind, name: kind === 'env' ? 'PATH' : undefined, value: 'probe-value' },
+      })
+      expect(record.anchor?.kind).toBe(kind)
+    }
+    expect((await ctx.memory.list()).length).toBe(ANCHOR_KINDS.length)
+    await fiber.dispose()
   })
 
   it('2026-09-15: 旧 suggested 迁移为 approved（新语义写入即生效），且迁移幂等', async () => {

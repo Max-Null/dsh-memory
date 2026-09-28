@@ -1,6 +1,6 @@
 {
   "name": "@max-null/dsh-memory",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Cross-session plaintext memory plugin for the DeepSeek Harness — deterministic BM25 recall, writes take effect immediately, signal-driven injection, no embeddings",
   "license": "MIT",
   "publishConfig": {
@@ -27,7 +27,8 @@
     "scripts/scan-orphans.mjs",
     "scripts/unzstd-frames.mjs",
     "scripts/ancestor-probe.mjs",
-    "scripts/analyze-cooccurrence.mjs"
+    "scripts/analyze-cooccurrence.mjs",
+    "scripts/check-memory-files.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -60,6 +61,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "mutate:check": "node scripts/mutate-check.mjs",
+    "check:memory": "npm run build && node scripts/check-memory-files.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

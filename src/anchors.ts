@@ -11,8 +11,20 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 
-/** 受控词汇表：写入时只能从这四种里选，不能自创（自创的锚点无法机械校验）。 */
-export type AnchorKind = 'env' | 'tool-list' | 'self-version' | 'path-exists'
+/**
+ * 受控词汇表：写入时只能从这几种里选，不能自创（自创的锚点无法机械校验）。
+ *
+ * **这是全仓库唯一的一份定义。** 工具 schema 的 `enum`、存储 zod 的 `z.enum`、以及
+ * `AnchorKind` 类型全部从它派生——2026-09-25 那次「154 条 project 记忆全部失联」的根因
+ * 就是同一份集合写了两处、加 `path-exists` 时漏了第三处（`engine.ts` 的 zod 仍只有 3 个
+ * kind，写入放行、加载才炸）。三份副本各自维护，漏改是**结构性必然**，不是疏忽。
+ *
+ * @see docs/设计/2026-09-25-写入兜底与失败可见化-设计方案.md §四.4
+ */
+export const ANCHOR_KINDS = ['env', 'tool-list', 'self-version', 'path-exists'] as const
+
+/** 受控词汇表推导出的类型——别再手写一遍这个联合。 */
+export type AnchorKind = (typeof ANCHOR_KINDS)[number]
 
 /** 一条记忆声明的锚点。 */
 export interface MemoryAnchor {
@@ -70,8 +82,14 @@ export function probeAnchor(anchor: MemoryAnchor, probes: AnchorProbes): string 
       const target = relative ? resolve(probes.workspaceCwd as string, anchor.name) : anchor.name
       return existsSync(target) ? 'present' : 'absent'
     }
-    default:
+    default: {
+      // 编译期穷尽性：`ANCHOR_KINDS` 新增取值而这里忘了加 case 时，下面这行会报错。
+      // 运行期仍然返回 `undefined`（「未校验」）而不是抛错——数据里可能躺着旧版本写下的
+      // 未知 kind，探测路径不该因为一条坏记录把整个启动校验带崩。
+      const unhandled: never = anchor.kind
+      void unhandled
       return undefined
+    }
   }
 }
 

@@ -11,6 +11,8 @@ import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { MemoryEngine } from './engine.ts'
 import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
+import { ANCHOR_KINDS } from './anchors.ts'
+import type { MemoryAnchor } from './anchors.ts'
 import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
@@ -60,7 +62,7 @@ interface MemoryToolRecord {
    * 有效性锚点（0.12.1 起投影）：这条记忆跟着哪个环境值走。看不见它就无从判断该改还是该清
    * ——`memory_update` 的 `anchor` 参数写对了没有，只能靠它回读。
    */
-  anchor?: { kind: 'env' | 'tool-list' | 'self-version' | 'path-exists', name?: string, value: string }
+  anchor?: MemoryAnchor
 }
 
 interface MemoryToolHit {
@@ -115,7 +117,7 @@ const RECORD_SCHEMA = {
       additionalProperties: false,
       description: '有效性锚点：这个值一变，这条记忆就自动失效。`memory_update` 传新值即改写（当场重新校验），传 `null` 即清除。',
       properties: {
-        kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version', 'path-exists'] },
+        kind: { type: 'string', required: true, enum: [...ANCHOR_KINDS] },
         name: { type: 'string' },
         value: { type: 'string', required: true },
       },
@@ -448,7 +450,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         additionalProperties: false,
         description: 'Optional validity anchor: bind this memory to a probeable environment value so it auto-expires when that value changes. Use only for facts that depend on the environment (tool behaviour under a specific version, config decided by an env var). 可选锚点：把记忆绑到可探测的环境值，值变了自动失效。只用于「随环境变化的事实」。',
         properties: {
-          kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version', 'path-exists'], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version; path-exists = a path that should still exist (`name` = the path, `value` = `present` or `absent`).' },
+          kind: { type: 'string', required: true, enum: [...ANCHOR_KINDS], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version; path-exists = a path that should still exist (`name` = the path, `value` = `present` or `absent`).' },
           name: { type: 'string', description: 'For kind=env: the variable name.' },
           value: { type: 'string', required: true, description: 'The value probed at write time.' },
         },
@@ -467,7 +469,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         // 参数已由 tool schema 校验，这里的窄化只为过类型
         ...args.anchor === undefined
           ? {}
-          : { anchor: args.anchor as { kind: 'env' | 'tool-list' | 'self-version' | 'path-exists', name?: string, value: string } },
+          : { anchor: args.anchor as MemoryAnchor },
       }, execProjectCwd(exec)).then(recordValue)
     },
     presentCall: args => present('Save memory', 'other', args.content),
@@ -711,7 +713,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
             type: 'object',
             additionalProperties: false,
             properties: {
-              kind: { type: 'string', required: true, enum: ['env', 'tool-list', 'self-version', 'path-exists'], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version; path-exists = a path that should still exist (`name` = the path, `value` = `present` or `absent`).' },
+              kind: { type: 'string', required: true, enum: [...ANCHOR_KINDS], description: 'env = a named environment variable; tool-list = the available tool set; self-version = this plugin version; path-exists = a path that should still exist (`name` = the path, `value` = `present` or `absent`).' },
               name: { type: 'string', description: 'For kind=env: the variable name. For kind=path-exists: the path (relative paths resolve against the session workspace).' },
               value: { type: 'string', required: true, description: 'The value probed at write time.' },
             },
@@ -738,7 +740,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         // 参数已由 tool schema 校验（对象或 null），这里的窄化只为过类型
         ...args.anchor === undefined
           ? {}
-          : { anchor: args.anchor as { kind: 'env' | 'tool-list' | 'self-version' | 'path-exists', name?: string, value: string } | null },
+          : { anchor: args.anchor as MemoryAnchor | null },
       }, cwd).then(recordValue)
     },
     presentCall: args => present('Update memory', 'other', args.id),
