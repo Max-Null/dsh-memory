@@ -7,8 +7,13 @@
  * 的记忆静默消失」。2026-09-25 那次 154 条 project 记忆全部不可见就是这么来的：写入放行、
  * 加载才炸、失败还被吞。
  *
- * **判据怎么算**：用插件自己的 `blockSchema`（从 `dist/engine.js` import）逐条 `safeParse`。
+ * **判据怎么算**：用插件自己的 `blockSchema`（从 `dist/schema.js` import）逐条 `safeParse`。
  * 同源是刻意的——另写一套判定迟早漂移成「扫描器说没事、打开时炸」这种最难查的形态。
+ *
+ * 为什么是 `dist/schema.js` 而不是 `dist/engine.js`：后者在运行时 import 了 `cordis` /
+ * `dsh-storage-domain` / `dsh-storage-json`，那三个是**宿主提供的 peer**，装版实体里没有
+ * ——直接加载会报 `Cannot find package '@deepseek-ai/cordis'`（2026-09-29 实测）。
+ * `schema.js` 只依赖 `zod`（真 dependencies）与 `anchors.js`（只有 node 内置），能独立加载。
  *
  * **哪些情况答不了**：
  *   - 只校验 `tables.blocks` 里的条目，不校验外层信封结构；
@@ -37,13 +42,13 @@ function fail(message) {
 
 let blockSchema
 try {
-  ({ blockSchema } = await import('../dist/engine.js'))
+  ({ blockSchema } = await import('../dist/schema.js'))
 } catch (error) {
   fail(
-    `无法加载 dist/engine.js（先跑 npm run build）：${error instanceof Error ? error.message : String(error)}`,
+    `无法加载 dist/schema.js（先跑 npm run build）：${error instanceof Error ? error.message : String(error)}`,
   )
 }
-if (blockSchema === undefined) fail('dist/engine.js 没有导出 blockSchema——构建产物太旧？')
+if (blockSchema === undefined) fail('dist/schema.js 没有导出 blockSchema——构建产物太旧？')
 
 /** 递归收集目录下的 *.json（跳过 node_modules）。 */
 function collect(target, out = []) {

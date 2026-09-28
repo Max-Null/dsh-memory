@@ -20,6 +20,7 @@ import { parsePromptFile, scanPromptDir, writePromptFile, type PromptFile } from
 import { detectSensitive } from './quarantine.ts'
 import { SELF_VERSION } from './self.ts'
 import { ANCHOR_KINDS, anchorHolds } from './anchors.ts'
+import { blockSchema, describeIssues } from './schema.ts'
 import type { AnchorProbes, MemoryAnchor } from './anchors.ts'
 import {
   DEFAULT_INJECTION_BUDGET,
@@ -366,57 +367,9 @@ interface StoredBlock {
 }
 
 /**
- * 存储块的 schema（门三的判据来源，2026-09-25）。
- *
- * **导出是为了让离线扫描器（`scripts/check-memory-files.mjs`）用它而不是自己再写一套**——
- * 两份判据会漂移，而漂移的方向恰好是「扫描器说没事、打开时炸」这种最难查的形态。
+ * 存储块的 schema 与 zod issue 的单行格式化，都在 {@link ./schema.ts}——单独成模块是为了
+ * 让离线扫描器能零 peer 依赖地加载它（见该文件头部）。
  */
-export const blockSchema = z.object({
-  namespace: z.enum(['global', 'project']),
-  status: z.enum(['suggested', 'approved', 'auto', 'suggest']),
-  injected: z.boolean().optional(),
-  quarantined: z.boolean().optional(),
-  quarantineReason: z.string().optional(),
-  hitCount: z.number().optional(),
-  source: z.enum(['agent', 'human']).optional(),
-  injectedAuto: z.boolean().optional(),
-  anchor: z.object({
-    kind: z.enum(ANCHOR_KINDS),
-    name: z.string().optional(),
-    value: z.string(),
-  }).optional(),
-  stale: z.boolean().optional(),
-  staleReason: z.string().optional(),
-  content: z.string(),
-  keywords: z.array(z.string()),
-  createdAt: z.number(),
-  updatedAt: z.number(),
-  lastUsedAt: z.number().optional(),
-  vector: z.array(z.number()).optional(),
-  kind: z.enum(['fact', 'prompt']).optional(),
-  meta: z.object({
-    seq: z.number().optional(),
-    name: z.string(),
-    dimension: z.string().optional(),
-    difficulty: z.string().optional(),
-    tags: z.array(z.string()),
-    summary: z.string(),
-    path: z.string(),
-    mtime: z.number(),
-    source: z.enum(['user', 'agent']),
-  }).optional(),
-})
-
-/**
- * 把 zod 的 issue 压成一行（门一，2026-09-25）。
- *
- * 排查成本的大头在「从 domain 打不开倒推」——`dsh-storage-domain` 封装后的错误只给到
- * 「哪个 domain 的哪条记录不合规」（`stored record '<id>' in table 'blocks' does not
- * match its schema`），**说不出是哪个字段、什么值、期望什么**。这行补的就是那段。
- */
-function describeIssues(error: z.ZodError): string {
-  return error.issues.map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')
-}
 
 /** Shared table shape; the two domains differ only by name and backend route. */
 function memorySpec(name: string) {

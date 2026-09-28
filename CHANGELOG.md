@@ -4,6 +4,36 @@
 
 > **关于 git tag**：0.7.1 / 0.7.2 / 0.7.3 / 0.8.0 / 0.9.0 / 0.9.1 六个版本**没有对应的 git tag**。它们的改动在仓库里是一次性提交的（`42b08ab`「feat(memory): 0.7.1–0.9.2 累积改动」，21 文件 / 1482 行），git 历史中不存在这些版本各自的代码状态——给它们各打一个 tag 只能全部指向同一个 commit，那是假精确，所以不补。这六个版本在 npm 上都有记录（`npm view @max-null/dsh-memory versions`）；GitHub 的 Release 列表会跳过它们，缺口即由此而来。
 
+## [0.15.0] - 2026-09-29
+
+### Fixed
+
+**`check:memory` 在真实安装环境里跑不起来。** 0.14.0 的门三用「插件自己的 `blockSchema`」做判据（同源，不另写一套），但脚本从 `dist/engine.js` import 它——而那个模块在**运行时** import 了 `@deepseek-ai/cordis`、`@deepseek-ai/dsh-storage-domain`、`@deepseek-ai/dsh-storage-json`，**三个都是宿主提供的 peer**，装版实体里没有：
+
+```
+Cannot find package '@deepseek-ai/cordis' imported from .../dist/engine.js
+```
+
+（顺带修正：脚本原来的提示写的是「先跑 `npm run build`」——**那个提示是错的**，问题不在构建，而在 peer 解析。）
+
+这个缺口是 0.14.0 发布后、在装版实体上实测才发现的：开发仓有 `devDependencies`（含那 6 个 peer），所以本地一直能跑。
+
+### Changed
+
+- **`blockSchema` 与 `describeIssues` 抽到 `src/schema.ts`**——一个**零 peer 依赖**的模块（只依赖 `zod` 这个真 `dependencies`，以及只用 node 内置模块的 `anchors.ts`）。于是 `dist/schema.js` 能被独立加载，扫描器改成 import 它，**判据仍然只有一份**（不另写、不漂移）。
+- 与 dsh-mneme 把共享的时段解析抽成 `peak-hours.js` 是同一个手法：**把「需要被独立加载的东西」与「需要宿主环境的东西」分开**。
+
+### 验证
+
+在**真实装版环境**（`~/.dsh/profiles/web/node_modules/@max-null/dsh-memory`——有 `zod`、**没有**那三个 peer）里实测：
+
+| 场景 | 结果 |
+|---|---|
+| 干净存量 | 扫描 1 文件 / 70 条记录，✅ 全部合规，退出码 **0** |
+| 注入一条坏记录 | ✗ 1 条不合规，给出 `anchor.kind: Invalid option: expected one of "env"\|"tool-list"\|"self-version"\|"path-exists"`，退出码 **1** |
+
+开发仓门禁不受影响：typecheck 零错误，**173 测试全绿**。
+
 ## [0.14.0] - 2026-09-29
 
 落地 `docs/设计/2026-09-25-写入兜底与失败可见化-设计方案.md`（三道门 + 治本）。
