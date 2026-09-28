@@ -44,6 +44,17 @@
 
 它给到 **domain 名 + 记录 id + 表名**，但**说不出是哪个字段、什么值、期望什么**——而那正是排查成本的大头（原设计 §4.1 的要求）。所以分工是：**门二负责「有没有坏」，门三负责「坏在哪」**。离线扫描器用同一份 schema，能给出 `anchor.kind: Invalid option: expected one of "env"|"tool-list"|"self-version"|"path-exists"`。
 
+### 复核发现（交付后独立检查）
+
+**两处新加的字段根本没到模型面前。** `memory_sweep` 的输出 schema（`SWEEP_SCHEMA`）是**写死的白名单**且 `additionalProperties: false`——而 `autoDemoteCandidates`（0.13.0）与 `coverage`（0.14.0）都没同步进去。两次改动的理由分别是「**让这个数字变得可观察**」与「**声明数据完整性**」，而两者都不会出现在工具输出里。
+
+已补进 schema，并加一条**遍历比对**的锁（`报告字段` vs `schema 字段`，不手抄字段名——手抄的那份迟早和 schema 一起忘）。负向控制实测：从 schema 摘掉 `coverage` → 该用例变红。
+
+**另外两处修正：**
+
+- `npm run check:memory` 去掉了 `npm run build` 前置。发布后的包里**没有 devDependencies**（没有 typescript），那个前置会让使用者在自己的环境里根本跑不了这道门；`dist` 本来就在包内，脚本自带「dist 缺失 → 提示先 build」。
+- `putBlock` 的 JSDoc 补了一条警告：`KvTable` 有**三个**写方法（`put` / `update` / `delete`），这道门只守 `put`。`delete` 不需要校验（**删掉一条不合规记录正是修复手段**），而 `update`（域内原子读改写，绕过本方法）经查**全仓未被使用**——将来若要用，它同样必须过 schema，否则门一就漏了一半。
+
 ### 内部
 
 - 测试 168 → **172**。新增：门二完整性声明的三态、门一的写入拒绝（含**不落盘**断言，比对文件内容而非 mtime）、四种 anchor kind 的写入与回读（遍历 `ANCHOR_KINDS` 而不是手抄字面量——新增 kind 时这条用例自动覆盖它）。
