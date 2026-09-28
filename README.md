@@ -155,4 +155,8 @@ node scripts/analyze-cooccurrence.mjs        # 关键词共现分析（记忆之
 
 ## 依赖（peerDependencies，由宿主提供）
 
-`@deepseek-ai/cordis`、`@deepseek-ai/dsh-storage`、`@deepseek-ai/dsh-storage-domain`、`@deepseek-ai/dsh-storage-json`、`@deepseek-ai/dsh-system-prompt`、`@deepseek-ai/dsh-tools`
+`@deepseek-ai/cordis`（`^4.0.1`），以及 `@deepseek-ai/dsh-storage`、`@deepseek-ai/dsh-storage-domain`、`@deepseek-ai/dsh-storage-json`、`@deepseek-ai/dsh-system-prompt`、`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-typert-protocol`——后面六个声明为 **`>=0.1.1-rc.1 <0.3.0`**。
+
+**为什么写显式范围而不是 caret**：caret 的上界是「下一个 minor」——`^0.1.1-rc.1` 展开为 `>=0.1.1-rc.1 <0.2.0-0`，内核一跨 minor 就判定不满足。而 peer 不满足时插件**不会被加载，也不会出现在 `did not activate` 列表里**：它在进入 fiber 图之前就被跳过，界面不报错，只表现为少一批功能。写成显式范围让 0.1 线与 0.2 线都能装载。
+
+**验证过的内核**：`0.1.1-rc.2`（原基线）与 `0.2.0-rc.1`（0.12.2 起——typecheck 用其类型定义零错误，并在隔离实例实机加载，三个失败信号全为 0）。下限保持原值不变：它是作者实际验证过的最早版本，比它更早的内核没验证过，不声称支持。
