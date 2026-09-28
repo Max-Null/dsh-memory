@@ -151,6 +151,7 @@ node scripts/scan-orphans.mjs [根目录]       # 清点「当前代码打不开
 node scripts/unzstd-frames.mjs <源> <目标>   # 解多帧 zstd（读 DSH 会话日志用）
 node scripts/ancestor-probe.mjs plan [--cwd <cwd>]   # 复算祖先链（只读）；seed/check/clean 验 ④-A
 node scripts/analyze-cooccurrence.mjs        # 关键词共现分析（记忆之间有没有关系网，只读）
+npm run check:memory        # 记忆文件存量体检（只读；0 = 全绿 / 1 = 有不合规 / 2 = 用法错）
 ```
 
 ## 依赖（peerDependencies，由宿主提供）
