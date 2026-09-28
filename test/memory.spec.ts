@@ -752,13 +752,14 @@ describe('dsh-memory plugin', () => {
     expect(ctx.memory.recallRecords().some(item => item.kind === 'prompt')).toBe(false)
   })
 
-  it('2026-09-15: 人工开过的注入不被自动降级（那是人的决定，不是信号的结论）', async () => {
+  it('2026-09-15: 人工开过的注入不进自动降级候选（那是人的决定，不是信号的结论）', async () => {
     const { ctx } = await setup()
     const record = await ctx.memory.remember({ content: 'manual pin' })
     await ctx.memory.setInjected(record.id, true)
 
-    const demoted = await ctx.memory.demoteStale(undefined, Date.now() + 60 * 24 * 60 * 60 * 1000)
-    expect(demoted).toBe(0)
+    // 2026-09-29 起 `demoteStale` 只返回候选、不再撤销（阈值缺分布依据）
+    const candidates = await ctx.memory.demoteStale(undefined, Date.now() + 60 * 24 * 60 * 60 * 1000)
+    expect(candidates).toEqual([])
     expect((await ctx.memory.list())[0]?.injected).toBe(true)
   })
 
@@ -837,7 +838,8 @@ describe('dsh-memory plugin', () => {
 
     const pinned = await ctx.memory.remember({ content: 'pinned through update' })
     await ctx.memory.update(pinned.id, { injected: true })
-    expect(await ctx.memory.demoteStale(undefined, Date.now() + 60 * 24 * 60 * 60 * 1000)).toBe(0)
+    // 显式钉过的不进候选（2026-09-29：`demoteStale` 只返回候选、不撤销）
+    expect(await ctx.memory.demoteStale(undefined, Date.now() + 60 * 24 * 60 * 60 * 1000)).toEqual([])
     const afterPin = (await ctx.memory.list()).find(item => item.id === pinned.id)
     expect(afterPin?.injected).toBe(true)     // 长期未命中也不撤
   })
@@ -905,13 +907,12 @@ describe('dsh-memory plugin', () => {
       .rejects.toThrow(/invalid arguments/i)
   })
 
-  it('2026-09-15: 自动升的常驻在长期未命中后降级——记忆不会无限累积', async () => {
+  it('2026-09-29: 自动升的常驻闲置超阈值后进候选——只计量，不撤销', async () => {
     const { ctx, globalRoot } = await setup()
     const record = await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
 
-    // 0.12.0 取消了自动升，所以「自动升上来的常驻」只能构造出来——但**自动降级规则本身
-    // 仍然成立**（库里还留着 0.12.0 之前自动升的记录），因此用例保留、换构造方式：直接改
-    // 存储文件造出 `injectedAuto: true` + 陈旧 lastUsedAt，再 reload 让引擎读到。
+    // 0.12.0 取消了自动升，所以「自动升上来的常驻」只能构造出来——直接改存储文件造出
+    // `injectedAuto: true` + 陈旧 lastUsedAt，再 reload 让引擎读到。
     const file = join(globalRoot, 'memory.json')
     const raw = JSON.parse(readFileSync(file, 'utf8')) as {
       tables: { blocks: Record<string, Record<string, unknown>> }
@@ -927,11 +928,65 @@ describe('dsh-memory plugin', () => {
     expect(before?.injected).toBe(true)
     expect(before?.injectedAuto).toBe(true)
 
-    expect(await ctx.memory.demoteStale(undefined, Date.now())).toBe(1)
+    // 2026-09-29 起：报出来，但不撤。那个阈值是从面板的折叠阈值借来的，代价不对等
+    // （展示阈值折错了点一下就能展开，行为阈值一撤就基本不会自己回来）——在拿到分布
+    // 之前不该继续用它动真格的。
+    const candidates = await ctx.memory.demoteStale(undefined, Date.now())
+    expect(candidates.map(item => item.id)).toEqual([String(record.id)])
+    expect(candidates[0]?.idleDays).toBe(90)
 
     const after = (await ctx.memory.list())[0]
-    expect(after?.injected).toBe(false)
-    expect(after?.status).toBe('approved')   // 只是退出常驻，仍可检索
+    expect(after?.injected).toBe(true)        // 仍在场：只计量不生效
+    expect(after?.status).toBe('approved')    // 状态本来就没动
+  })
+
+  it('2026-09-29: 体检报出自动降级候选，且全程只读（不撤、不改时间戳）', async () => {
+    const { ctx, globalRoot } = await setup()
+    const record = await ctx.memory.remember({ content: 'aged resident note' })
+
+    const file = join(globalRoot, 'memory.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, Record<string, unknown>> }
+    }
+    const stored = raw.tables.blocks[record.id]
+    stored.injected = true
+    stored.injectedAuto = true
+    stored.lastUsedAt = Date.now() - 45 * 24 * 60 * 60 * 1000
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+    await ctx.memory.reload()
+
+    const before = await ctx.memory.list()
+    const beforeStamp = before[0]?.updatedAt
+
+    const report = await ctx.memory.sweep()
+    expect(report.autoDemoteCandidates.map(item => item.id)).toEqual([String(record.id)])
+    expect(report.autoDemoteCandidates[0]?.idleDays).toBe(45)
+
+    // 只读承诺：体检不撤注入、不动任何时间戳（连 updatedAt 都不写）
+    const after = await ctx.memory.list()
+    expect(after[0]?.injected).toBe(true)
+    expect(after[0]?.updatedAt).toBe(beforeStamp)
+  })
+
+  it('2026-09-29: 体检的候选判据与降级共用一份——两边对同一条记录给同样的结论', async () => {
+    const { ctx, globalRoot } = await setup()
+    const aged = await ctx.memory.remember({ content: 'aged one' })
+    const fresh = await ctx.memory.remember({ content: 'fresh one', injected: true })
+
+    const file = join(globalRoot, 'memory.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      tables: { blocks: Record<string, Record<string, unknown>> }
+    }
+    raw.tables.blocks[aged.id]!.injected = true
+    raw.tables.blocks[aged.id]!.injectedAuto = true
+    raw.tables.blocks[aged.id]!.lastUsedAt = Date.now() - 40 * 24 * 60 * 60 * 1000
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+    await ctx.memory.reload()
+
+    const fromSweep = (await ctx.memory.sweep()).autoDemoteCandidates.map(item => item.id).sort()
+    const fromDemote = (await ctx.memory.demoteStale()).map(item => item.id).sort()
+    expect(fromSweep).toEqual(fromDemote)
+    expect(fromSweep).toEqual([String(aged.id)])   // fresh 那条是显式钉的，两边都不选它
   })
 
   it('2026-09-15: 旧 suggested 迁移为 approved（新语义写入即生效），且迁移幂等', async () => {

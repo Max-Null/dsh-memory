@@ -256,6 +256,31 @@ export interface SweepItem {
   summary: string
 }
 
+/** 一条「自动降级若生效就会被撤下」的常驻（2026-09-29 起只计量、不生效）。 */
+export interface AutoDemoteCandidate extends SweepItem {
+  /** 距上次命中（从未命中则回退最后更新）的天数——这是定阈值时要看的那个分布。 */
+  idleDays: number
+}
+
+/**
+ * 自动降级的判据（纯函数，2026-09-29 抽出）：只针对**自动升上来的**常驻注入——人工
+ * 开的开关不会被时间悄悄关掉（那是人的决定，不是信号的结论）。
+ *
+ * 抽成纯函数是因为它有两个调用方，而两者对「能不能写」的要求相反：`demoteStale` 在写
+ * 路径上（`writeScope` 之内），而 `sweep` 承诺只读（连时间戳都不写）。判据各写一份迟早
+ * 漂移成「体检说该降、降级说不用降」这类两套口径——所以只留这一份。
+ *
+ * @param record - 参与判定的记录。
+ * @param threshold - 闲置多久算候选（毫秒时间戳，早于它才算）。
+ * @returns 该记录是否属于本会被撤下的常驻。
+ */
+export function isAutoDemoteCandidate(record: MemoryRecord, threshold: number): boolean {
+  if (record.injectedAuto !== true) return false
+  if (record.quarantined === true) return false
+  if (record.status !== 'approved') return false
+  return (record.lastUsedAt ?? record.updatedAt) <= threshold
+}
+
 /**
  * 只读体检的产出（{@link MemoryEngine.sweep}）。四类各有明确的消费者，不做「算了没人读」的采样
  * ——候选与新失效会进注入诊断行（模型每轮可见），久未命中与全量留给按需调用。
@@ -267,6 +292,14 @@ export interface SweepReport {
   longUnused: Array<SweepItem & { lastUsed: number }>
   /** 候选：被反复检索命中但没有被钉成常驻（见 `candidates`）。 */
   candidates: Array<SweepItem & { hitCount: number }>
+  /**
+   * **自动降级若生效**会被撤下的常驻（2026-09-29 起只计量不生效）。
+   *
+   * 与 `longUnused` 正好互补：那个查的是「非常驻且久未命中」（可清理），这个查的是
+   * 「自动升上来的常驻且久未命中」（会被时间规则撤下）。留着它是因为阈值 `AUTO_DEMOTE_DAYS`
+   * 至今没有分布依据——等这张清单积累出「实际闲置多久」的形状，才有得可定。
+   */
+  autoDemoteCandidates: AutoDemoteCandidate[]
   /** 常驻与注入预算的占用：总数 / 实际进注入 / 预算（无限制时不出现）/ 被挤掉几条。 */
   resident: { total: number, injected: number, budget: number | undefined, omitted: number }
 }
@@ -852,6 +885,17 @@ export class MemoryEngine extends Service {
       }))
     const candidates = this.candidates(projectCwd)
       .map(record => ({ id: String(record.id), summary: brief(record), hitCount: record.hitCount ?? 0 }))
+    // 自动降级的候选（2026-09-29）：判据与 `demoteStale` 共用同一个纯函数，但这里
+    // 只列出来、不撤下——`sweep` 承诺只读。它的用途是让那个至今没有分布依据的阈值
+    // 变得可观察：这张清单里的 `idleDays` 积累一段时间后，就是定阈值的依据。
+    const demoteThreshold = now - AUTO_DEMOTE_DAYS * 24 * 60 * 60 * 1000
+    const autoDemoteCandidates = records
+      .filter(record => isAutoDemoteCandidate(record, demoteThreshold))
+      .map(record => ({
+        id: String(record.id),
+        summary: brief(record),
+        idleDays: Math.floor((now - (record.lastUsedAt ?? record.updatedAt)) / (24 * 60 * 60 * 1000)),
+      }))
 
     const resident = this.recallRecords(projectCwd)
     const rendered = renderInjection(resident, this.config.injectionBudget ?? DEFAULT_INJECTION_BUDGET, summaryChars)
@@ -859,6 +903,7 @@ export class MemoryEngine extends Service {
       stale,
       longUnused,
       candidates,
+      autoDemoteCandidates,
       resident: {
         total: resident.length,
         injected: rendered.lines.length,
@@ -1150,8 +1195,15 @@ export class MemoryEngine extends Service {
           + ` / 回填计数 ${migration.counted}`,
         )
       }
-      const demoted = await this.demoteStale(projectCwd)
-      if (demoted > 0) this.ctx.logger?.info?.(`dsh-memory: 长期未命中，撤下常驻 ${demoted} 条`)
+      // 自动降级自 2026-09-29 起只计量不生效（阈值缺分布依据，见 `demoteStale`）。
+      // 这里只报一行，让人知道有多少条落在那个数字的另一侧、最久的闲置了多久。
+      const demoteCandidates = await this.demoteStale(projectCwd)
+      if (demoteCandidates.length > 0) {
+        this.ctx.logger?.info?.(
+          `dsh-memory: ${demoteCandidates.length} 条常驻闲置超 ${AUTO_DEMOTE_DAYS} 天`
+          + `（只计量不生效；最久 ${demoteCandidates[0]?.idleDays ?? 0} 天）`,
+        )
+      }
       const staled = await this.verifyAnchors(this.anchorProbes(projectCwd), projectCwd)
       if (staled > 0) this.ctx.logger?.info?.(`dsh-memory: 锚点校验更新 ${staled} 条`)
       // 体检（0.12.0）：只读，产物存进实例字段，供注入侧报「本次校验发现的新失效」。
@@ -1359,33 +1411,35 @@ export class MemoryEngine extends Service {
    * @param now - 当前时间（测试注入用）。
    * @returns 被撤下的条数（诊断与日志用）。
    */
-  async demoteStale(projectCwd?: string, now = Date.now()): Promise<number> {
-    return this.writeScope(projectCwd, () => this.demoteStaleInner(projectCwd, now))
-  }
-
-  /** {@link demoteStale} 的实现体；必须经 `writeScope` 进入。 */
-  private async demoteStaleInner(projectCwd?: string, now = Date.now()): Promise<number> {
+  /**
+   * 自动降级的**计量**（2026-09-29 起不再生效）：列出「若判据生效会被撤下」的常驻，
+   * **不修改任何状态**。
+   *
+   * 为什么停掉撤销：那个阈值（`AUTO_DEMOTE_DAYS`）至今没有分布依据——它是 2026-09-15
+   * 从面板的折叠阈值 `COLD_DAYS` 借来的。两者的代价不对等：展示阈值折错了点一下就能
+   * 展开，而行为阈值一撤，0.12.0 取消了自动升之后基本不会自己回来。按「没有真实分布时
+   * 拍任何数字都是误杀面」（借自 dsh-mneme 的写入准入阶段一），在拿到分布之前不该继续
+   * 用这个数字动真格的。
+   *
+   * 候选由 {@link sweep} 的 `autoDemoteCandidates` 报出，积累出「实际闲置多久」的形状
+   * 之后再定阈值。判据是 `isAutoDemoteCandidate`——与体检共用一份，不各写一份。
+   *
+   * @param projectCwd - 会话工作区；给了就连工作区表一起扫。
+   * @param now - 当前时间（测试注入用）。
+   * @returns 本会被撤下的常驻清单，按闲置天数降序。
+   */
+  async demoteStale(projectCwd?: string, now = Date.now()): Promise<AutoDemoteCandidate[]> {
     const threshold = now - AUTO_DEMOTE_DAYS * 24 * 60 * 60 * 1000
-    const tables: Array<KvTable<string, StoredBlock>> = [this.requireTable('global')]
-    if (projectCwd !== undefined && projectCwd !== '') {
-      const project = await this.projectTableFor(projectCwd)
-      if (project !== undefined) tables.push(project)
-    }
-    let demoted = 0
-    for (const table of tables) {
-      // 先快照键值对：put 会改到底层 Map，边遍历边写不安全
-      for (const [id, block] of [...table.entries()]) {
-        if (block.injectedAuto !== true) continue
-        if (block.quarantined === true) continue
-        if (normalizeBlock(block).status !== 'approved') continue
-        const last = block.lastUsedAt ?? block.updatedAt
-        if (last > threshold) continue
-        await table.put(id, { ...block, injected: false, injectedAuto: false })
-        this.ctx.emit('memory/changed', { operation: 'injected', id: MemoryId(id), injected: false })
-        demoted += 1
-      }
-    }
-    return demoted
+    const summaryChars = this.config.summaryChars ?? DEFAULT_SUMMARY_CHARS
+    const records = await this.allRecords(undefined, projectCwd)
+    return records
+      .filter(record => isAutoDemoteCandidate(record, threshold))
+      .map(record => ({
+        id: String(record.id),
+        summary: deriveSummary(record.content, summaryChars),
+        idleDays: Math.floor((now - (record.lastUsedAt ?? record.updatedAt)) / (24 * 60 * 60 * 1000)),
+      }))
+      .sort((left, right) => right.idleDays - left.idleDays)
   }
 
   /**
