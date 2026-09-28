@@ -61,7 +61,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "mutate:check": "node scripts/mutate-check.mjs",
-    "check:memory": "npm run build && node scripts/check-memory-files.mjs",
+    "check:memory": "node scripts/check-memory-files.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

@@ -196,6 +196,30 @@ const SWEEP_SCHEMA = {
         omitted: { type: 'number', required: true },
       },
     },
+    autoDemoteCandidates: {
+      type: 'array',
+      required: true,
+      description: '自动降级若生效会被撤下的常驻（0.13.0 起只计量不生效）。`idleDays` 就是定那个阈值要看的分布。',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', required: true },
+          summary: { type: 'string', required: true },
+          idleDays: { type: 'number', required: true },
+        },
+      },
+    },
+    coverage: {
+      type: 'object',
+      required: true,
+      additionalProperties: false,
+      description: '数据完整性声明（0.14.0）：本次体检实际读到了哪些存储。`project` 为 `unreadable` 时，前面几项只覆盖 global——别对着一个看起来正常的偏小数字做判断。',
+      properties: {
+        project: { type: 'string', required: true, enum: ['included', 'absent', 'unreadable'] },
+        projectError: { type: 'string', description: '`unreadable` 时的原因；其余情况不出现。' },
+      },
+    },
   },
 } as const
 

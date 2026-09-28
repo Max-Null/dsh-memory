@@ -1069,6 +1069,24 @@ describe('dsh-memory plugin', () => {
     await fiber.dispose()
   })
 
+  it('2026-09-29: memory_sweep 的输出 schema 覆盖报告的每一个字段', async () => {
+    // 输出 schema 是写死的白名单（`additionalProperties: false`）——加了字段却忘了同步它，
+    // 那个字段就永远到不了模型面前。0.13.0 的 `autoDemoteCandidates` 与 0.14.0 的
+    // `coverage` 都曾漏在这里（2026-09-29 复核时才发现：两次改动的理由分别是「让这个数字
+    // 可观察」与「声明数据完整性」，而两者都没真正出现在报告工具的输出里）。
+    //
+    // 遍历比对而不是手抄字段名：手抄的那份迟早和 schema 一起忘。
+    const { ctx, fiber } = await setup()
+    const report = await ctx.memory.sweep()
+    const tool = ctx.tools.get('memory_sweep') as
+      | { output?: { schema?: { properties?: Record<string, unknown> } } }
+      | undefined
+    const declared = Object.keys(tool?.output?.schema?.properties ?? {})
+    expect(declared.length).toBeGreaterThan(0)
+    expect(declared.sort()).toEqual(Object.keys(report).sort())
+    await fiber.dispose()
+  })
+
   it('2026-09-15: 旧 suggested 迁移为 approved（新语义写入即生效），且迁移幂等', async () => {
     const { ctx } = await setup()
     const record = await ctx.memory.remember({ content: 'legacy pending note' })
