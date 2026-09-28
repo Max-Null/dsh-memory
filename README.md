@@ -11,7 +11,7 @@ This plugin belongs to the **`@max-null/*` family** — a set of plugins that to
 1. **写入即生效，人是例外干预者**：模型写入的记忆直接生效（`approved`），不再逐条等人放行；人保留随时查看、改写、删除、钉住或回滚的能力——人不在场不等于失控。
 2. **可观测先于精准**：每条记忆是明文，`memory_list` 随时可见、`memory_forget` 随时删除——不存在"静默暗礁"。
 3. **明文是人机共享的审计窗口**：记忆是可读文本，模型可自检其是否过期（有效性锚点会在所绑环境值变化后标记 `stale`），人可随时查看与改写。
-4. **确定性且缓存安全**：BM25 关键词检索是存储的纯函数、无 LLM 调用；固定指引进 system-prompt section，`approved + injected` 记忆进 recall context（global 全量 + 当前会话工作区），逐条为单行摘要并按注入预算截断（超预算按最近使用优先，省略数在面板可见）。
+4. **确定性且缓存安全**：BM25 关键词检索是存储的纯函数、无 LLM 调用；固定指引进 system-prompt section，`approved + injected` 记忆进 recall context（global 全量 + 当前会话工作区），逐条为单行摘要并按注入预算截断（超预算按最近更新优先取舍，省略数在面板可见）。
 
 ## 截图
 
@@ -39,8 +39,8 @@ npm install @max-null/dsh-memory
 
 ## 提供的服务与工具
 
-- **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `setStatus` / `move`
-- **工具**：`memory_save`、`memory_list`、`memory_search`、`memory_confirm`、`memory_forget`、`memory_update`、`memory_move`
+- **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `update` / `move` / `setStatus` / `setInjected` / `supersede` / `retract` / `sweep` / `demoteStale` / `verifyAnchors` / `reload` 等
+- **工具**（12 个）：`memory_save`、`memory_list`、`memory_search`、`memory_update`、`memory_confirm`、`memory_forget`、`memory_move`、`memory_sweep`，加提示词模板四件套 `prompt_search`、`prompt_get`、`prompt_list`、`prompt_add`
 - **注入**：`tool:memory` 指引 section（工具用法 + 常驻注入判据）+ `memory:self` 机制自述 + `memory:recall` 召回 context（global 的 `approved + injected` + 当前会话工作区的 `approved + injected`，带 `[memory:<id>:<namespace>]` 来源标记；摘要化 + 预算截断）
 - **检索**：BM25（CJK 单字 + 2-gram，content 与 keywords 字段分离加权；中文多字查询精度显著优于单字切分）；可选语义融合（见「可选配置」）
 
@@ -94,17 +94,15 @@ md 文件是唯一事实源（`~/.dsh/prompt-library/*.md` 为 global；`<worksp
 
 ```
 模型 memory_save     →  status: approved，立即生效；命中密钥/凭据规则则隔离（不进检索也不进注入）
-                        给 injected 则同时钉住常驻（0.8.0），不吃下面两条自动规则
+                        给 injected 则同时钉住常驻（0.8.0），不受自动规则影响
 memory_search        →  关键词/语义召回（只搜记忆；模板走 prompt_search 通道，不会混进候选池）
-命中累计 2 次         →  injected: true（自动打开常驻：global + 当前会话工作区，摘要化 + 预算截断）
-30 天未再命中         →  自动撤下常驻（只撤自动开的；人工或模型显式动过的开关双向豁免）
 人（面板 / 开关）     →  钉住 / 删除 / 放行隔离记录 / 回滚
 memory_forget        →  随时删除（删除始终是人的动作）
 ```
 
-两条自动规则撑起淘汰机制：**反复被检索命中**是它值得每轮付费的证据，**长期不再被命中**则自动退出常驻。两者都不删除任何内容——记忆不会无限累积，也不会被系统自行清空。
+**常驻开关只由人（或模型显式传 `injected`）决定。** 两条自动规则都已在 0.12.0 / 0.13.0 停用：命中次数不再自动升常驻（它只喂体检报告的候选提示），30 天未命中的自动撤下也改为**只计量不生效**——撤下来就基本不会自己回去，那种动作不该由一个没有分布依据的阈值决定（阈值来历见 `docs/设计/2026-09-29-借阅-dsh-mneme-后的自查.md` §二）。两者都不删除任何内容——记忆不会无限累积，也不会被系统自行清空。
 
-自动规则对**低频但关键**的记忆（长期约定、判据、委托）够不着：它们不会被反复检索，够不到阈值；勉强够到也会被 30 天撤下。这类走显式路径——在 `memory_save` / `memory_update` 里给 `injected` 即钉住，写的是与面板开关同一套语义（`injectedAuto: false`），此后不受两条自动规则影响。未审核与已隔离的记录不接受注入。
+**低频但关键**的记忆（长期约定 / 判据 / 委托）本来就够不着旧阈值，而自动规则停用之后，问题从「够不着」变成了「必须显式说」。这类走显式路径——在 `memory_save` / `memory_update` 里给 `injected` 即钉住，写的是与面板开关同一套语义（`injectedAuto: false`）。未审核与已隔离的记录不接受注入。
 
 注入有**字符预算**（默认 1500，config `injectionBudget`）：装不下的条目**整条丢弃**（不截内容），按「最近更新优先」取舍——所以 `injected: true` 不等于「每轮真的在场」，它只保证有资格排队。0.9.0 起这种出局不再无声：注入末尾会追加一行 `（另有 N 条常驻因预算未注入：…）`，0.9.1 起列出的是**每条的短摘要**而不是 id——查 id 是什么的那一步最容易省略，省略了就等于没报；**清理干净即自行消失**。面板的注入预览里也能展开看明细。诊断行本身不占预算。
 

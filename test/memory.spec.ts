@@ -46,7 +46,7 @@ describe('dsh-memory plugin', () => {
     // 工具清单漏列的守卫（0.10.0 曾漏掉 prompt_* 系列、0.12.0 补了 memory_sweep）：
     // 自述是模型行为的实际控制器，清单陈旧等于它按一份不存在的工具面行事。
     expect(self?.text).toContain('memory_sweep')
-    expect(self?.text).toContain('11 个工具')
+    expect(self?.text).toContain('12 个工具')
 
     await fiber.dispose()
     expect(ctx.tools.get('memory_save')).toBeUndefined()
@@ -1084,6 +1084,28 @@ describe('dsh-memory plugin', () => {
     const declared = Object.keys(tool?.output?.schema?.properties ?? {})
     expect(declared.length).toBeGreaterThan(0)
     expect(declared.sort()).toEqual(Object.keys(report).sort())
+    await fiber.dispose()
+  })
+
+  it('自述的工具清单覆盖实际注册的每一个工具', async () => {
+    // 自述是模型行为的实际控制器——清单漏掉一个工具，模型就按一份不存在的工具面行事。
+    // 而「漏掉」很难靠人眼发现：0.11.0 加了 `memory_move`，自述的数字与清单一直停在 11，
+    // 直到 0.14.0 收尾核对才被翻出来（README 那边更早，只列了 7 个）。
+    //
+    // 清单来源是 `registeredToolNames`（注册时登记——`ToolRegistry` 只提供 register/get，
+    // 没有列举 API，没法反查）。这里遍历它，不手抄名字：手抄的那份迟早和注册表一起忘。
+    const { ctx, fiber } = await setup()
+    const self = (await ctx.systemPrompt.assemble()).contexts.find(c => c.name === 'memory:self')
+    const text = self?.text ?? ''
+    // 只断言**工具清单本身**：先取「你有 N 个工具：…。」那一段，再剥掉中文括号里的说明。
+    // 两步都必要——工具名在括号说明里也会出现一次（`memory_move` 就有一句「把放错了层的
+    // 记忆移到…」），不剥的话，把名字从清单里删掉断言照样通过。这两层都是负向控制实测
+    // 出来的，不是推测。
+    const listSection = (/你有 \d+ 个工具：([^。]*)/.exec(text)?.[1] ?? '').replace(/（[^）]*）/g, '')
+    expect(listSection).not.toBe('')
+    expect(plugin.registeredToolNames.length).toBeGreaterThan(0)
+    for (const toolName of plugin.registeredToolNames) expect(listSection).toContain(toolName)
+    expect(text).toContain(`${plugin.registeredToolNames.length} 个工具`)
     await fiber.dispose()
   })
 

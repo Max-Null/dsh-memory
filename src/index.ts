@@ -34,6 +34,24 @@ export { bm25FieldScores, bm25Scores, cosineSimilarity, rrfFuse, tokenize } from
 export const name = 'dsh-memory'
 export const inject = ['storage', 'systemPrompt', 'tools', 'webServer', 'webRuntime']
 
+/**
+ * 本次挂载实际注册的工具名，按注册顺序。
+ *
+ * 存在的理由：**自述（`memory:self`）与 README 都要列工具清单，而清单会漏**——0.11.0 加了
+ * `memory_move` 之后，自述的数字与清单一直停在 11，直到 0.14.0 收尾核对才被翻出来（README
+ * 那边更早，只列了 7 个）。`ToolRegistry` 只提供 `register` / `get`，**没有列举 API**，所以
+ * 清单没法从注册表反查；改成注册时登记，清单就有了唯一来源。
+ *
+ * @see test/memory.spec.ts 的自述覆盖用例——它遍历这个数组，不手抄名字。
+ */
+export const registeredToolNames: string[] = []
+
+/** 登记一个工具名并原样返回——包在 `defineTool` 的 `name` 字段外面。 */
+function registered(toolName: string): string {
+  registeredToolNames.push(toolName)
+  return toolName
+}
+
 /** Compact model-facing record; the branded id serializes as its string. */
 interface MemoryToolRecord {
   id: string
@@ -395,6 +413,9 @@ function present(title: string, kind: 'read' | 'other', rawInput?: unknown): Gen
 }
 
 export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> {
+  // 每次挂载都是一次全新的注册——清空上一轮的登记。它是模块级数组（测试要能 import 它），
+  // 不清的话同一进程里挂载两次会累积成双份，而消费方（自述覆盖用例）拿到的数量就对不上了。
+  registeredToolNames.length = 0
   await ctx.plugin(MemoryEngine, config)
   await ctx.plugin(MemoryGateway)
   // 0.3.6：自带面板数据通道（HTTP，独立包无需 Typert 构建产物）
@@ -462,7 +483,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   })
 
   ctx.tools.register(defineTool({
-    name: 'memory_save',
+    name: registered('memory_save'),
     description: 'Save one cross-session memory. It takes effect immediately; credential-like content is quarantined instead. Record durable preferences, corrections and reusable conclusions — not transient state, guesses, or facts readable from the repo (record where to look instead). 保存一条跨会话记忆：写入即生效；命中密钥/凭据规则的写入会被隔离。只记长期偏好、纠正与可复用结论——不记临时状态、推测、或能从仓库读到的事实（那类记「去哪查」）。',
     parameters: {
       content: { type: 'string', required: true, description: 'Plaintext memory content.' },
@@ -500,7 +521,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_list',
+    name: registered('memory_list'),
     description: 'List every stored memory, optionally filtered by namespace, status, injected switch, or update time. Every memory is plaintext and inspectable. 列出全部记忆，可按 namespace/status/injected/更新时间过滤；均为明文可查。',
     parameters: {
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
@@ -529,7 +550,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_search',
+    name: registered('memory_search'),
     description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. 按关键词检索记忆（中文 2-gram + 关键词加权；配置嵌入时含语义融合；含待审核条目，被隔离的除外）。',
     parameters: {
       query: { type: 'string', required: true, description: 'Keyword query. 关键词查询.' },
@@ -552,7 +573,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'prompt_search',
+    name: registered('prompt_search'),
     description: 'Search prompt templates by keyword plus dimension/difficulty/tag filters. Returns matching summaries; call prompt_get for the full text. 按关键词+维度/难度/标签检索提示词模板，返回匹配摘要；取全文用 prompt_get。',
     parameters: {
       query: { type: 'string', required: true, description: 'Keyword query (name/tag/body). 关键词查询（名称/标签/正文）.' },
@@ -591,7 +612,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'prompt_get',
+    name: registered('prompt_get'),
     description: 'Fetch a prompt template full text by id or name (name matches the file stem without the seq prefix). 按 id 或名称取模板全文（名称 = 文件名去序号部分）。',
     parameters: {
       nameOrId: { type: 'string', required: true, description: 'Template id or name. 模板 id 或名称.' },
@@ -621,7 +642,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'prompt_list',
+    name: registered('prompt_list'),
     description: 'List every prompt template index (no full text), optionally filtered by dimension/difficulty/tag. 列出全部模板索引（不含全文），可按维度/难度/标签过滤。',
     parameters: {
       dimension: { type: 'string', description: '按维度过滤.' },
@@ -648,7 +669,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'prompt_add',
+    name: registered('prompt_add'),
     description: 'Add one prompt template to the library (writes a metadata-marked md file; source=agent is surfaced in the UI). 新增一条提示词模板（写元数据 md 文件；source=agent 在 UI 角标提示）。',
     parameters: {
       name: { type: 'string', required: true, description: 'Template name (also the file stem). 模板名称（也是文件名）.' },
@@ -679,7 +700,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_forget',
+    name: registered('memory_forget'),
     description: 'Delete one stored memory by id. The human owner may remove any memory.',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list or memory_search.' },
@@ -695,7 +716,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_move',
+    name: registered('memory_move'),
     description: 'Move one memory to another layer: `global`, `self` (the current workspace), or a relative ancestor (`..` / `../..`). Use it when a memory sits at the wrong level — a project-specific rule parked in `global` that leaks into unrelated workspaces, or a fact that turned out to hold for sibling projects too. The record keeps its id, and the result reports whether the source layer still sees it. 把一条记忆移到另一层：`global`、`self`（当前工作区）或相对祖先（`..` / `../..`）。用于记忆待错了层——只属于某个项目的规矩躺在 `global` 里、漏进无关工作区，或某条事实其实对兄弟项目也成立。id 保持不变，结果里会报告移动后源层是否仍看得见它。',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list or memory_search. 要移动的记忆 id。' },
@@ -721,7 +742,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_update',
+    name: registered('memory_update'),
     description: 'Update the content, keywords, persistent-injection switch or validity anchor of one stored memory (e.g. correcting stale facts, or re-anchoring a memory whose anchor no longer holds). The record keeps its review status; content that looks like a credential quarantines it instead. 修改一条记忆的内容、关键词、常驻注入开关或有效性锚点（如修正过时信息、把失效的锚点改对）。改动后记忆保持原有审核状态；若新内容命中危险规则则转为隔离。',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
@@ -771,7 +792,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_confirm',
+    name: registered('memory_confirm'),
     description: 'Release a quarantined memory: marks it human-reviewed (`approved`) and clears its quarantine. Under the silent mechanism ordinary writes already take effect by themselves, so call this only when the human explicitly asks to release a quarantined memory. 放行一条被隔离的记忆：标记为已审核并解除隔离。静默机制下普通写入已自行生效，因此仅在用户明确要求放行隔离记忆时调用。',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact memory id from memory_list. 记忆 id（来自 memory_list）.' },
@@ -787,7 +808,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_sweep',
+    name: registered('memory_sweep'),
     description: 'Read-only health check: lists stale memories (with the reason), long-unused non-resident ones, candidates that keep being retrieved without being pinned, and how much of the injection budget the resident set takes. Changes nothing. 只读体检：列出失效的记忆（带原因）、久未被检索命中的非常驻记录、被反复检索却未常驻的候选，以及常驻占用了多少注入预算。不修改任何状态——最坏情况是报告不准，而不是误改内容。',
     parameters: {},
     output: {
