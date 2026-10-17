@@ -44,6 +44,9 @@ jobs:
 
       - run: pnpm test
 
+      # dry-run 也覆盖构建：publish 时 prepublishOnly 会再跑一次，幂等。
+      - run: pnpm run build
+
       # prepublishOnly 会再 build 一次（npm publish 的既有行为），产物与测试都来自同一次运行。
       # 凭据来自 OIDC（npm 侧的 Trusted Publisher 绑定本仓 + 本 workflow），不再用长期 token。
       - name: publish
