@@ -136,11 +136,11 @@ function promptProjection(record: import('./engine.ts').MemoryRecord): Record<st
 
 /** 挂载 /memory/api 路由（apply 调用）。 */
 export function mountMemoryApi(ctx: Context): void {
-  // webServer/webRuntime 由 index.ts 的 inject 声明（Context 类型未扩展，断言访问）
+  // webServer/webStartup 由 index.ts 的 inject 声明（Context 类型未扩展，断言访问）
   const webServer = (ctx as unknown as { webServer: {
     register(descriptor: { kind: string, path: string, handler: (req: unknown, res: unknown) => Promise<void> | void }): () => void
   } }).webServer
-  const webRuntime = (ctx as unknown as { webRuntime: { trustedHosts: readonly string[] } }).webRuntime
+  const webStartup = (ctx as unknown as { webStartup: { trustedHosts: readonly string[] } }).webStartup
 
   const api: Record<string, ApiMethod> = {
     'list': (payload) => {
@@ -269,7 +269,7 @@ export function mountMemoryApi(ctx: Context): void {
   }
 
   const fence = (req: { headers: Record<string, string | string[] | undefined> }): boolean =>
-    isTrusted(req, webRuntime.trustedHosts)
+    isTrusted(req, webStartup.trustedHosts)
 
   ctx.effect(() => webServer.register({
     kind: 'prefix',

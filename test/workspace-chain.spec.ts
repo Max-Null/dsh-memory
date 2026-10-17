@@ -31,7 +31,7 @@ async function setup() {
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRegistry)
   ctx.provide('webServer' as never, { register: () => () => {} } as never)
-  ctx.provide('webRuntime' as never, { trustedHosts: [] } as never)
+  ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
   const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-chain-root-'))
   const fiber = await ctx.plugin(plugin, { globalRoot })
   return { ctx, fiber, globalRoot }

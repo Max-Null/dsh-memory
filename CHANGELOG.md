@@ -4,6 +4,18 @@
 
 > **关于 git tag**：0.7.1 / 0.7.2 / 0.7.3 / 0.8.0 / 0.9.0 / 0.9.1 六个版本**没有对应的 git tag**。它们的改动在仓库里是一次性提交的（`42b08ab`「feat(memory): 0.7.1–0.9.2 累积改动」，21 文件 / 1482 行），git 历史中不存在这些版本各自的代码状态——给它们各打一个 tag 只能全部指向同一个 commit，那是假精确，所以不补。这六个版本在 npm 上都有记录（`npm view @max-null/dsh-memory versions`）；GitHub 的 Release 列表会跳过它们，缺口即由此而来。
 
+## [0.16.0] - 2026-10-18
+
+### Added
+
+**定时备份**（`src/backup.ts`）：按小时把 `memory.json` 与 `memory_project_*.json` 复制到 `DSH_HOME` 之外的目录，默认保留 14 份。只读文件、只复制，不经过引擎的写入路径；首次延迟 1 分钟避开启动高峰，插件卸载时补最后一次（定时器只在运行期生效）。配置项：`backup.enabled` / `backup.targetRoot`（默认 `~/.dsh-backups/memory`）/ `backup.intervalMinutes`（默认 60）/ `backup.keep`（默认 14）。
+
+动机是 2026-10-18 的一次事故：`~/.dsh/storages` 被外部删除后全局记忆只剩 1 条——跨会话记忆此前只有内存与那一份文件两个落点，没有第二份。
+
+### Changed
+
+- 适配 DSH 0.2.1：`inject` 的 `webRuntime` 换成 `webStartup`。`webRuntime` 服务自 0.2.1-alpha.2 起被删除，保留旧名会让整个插件静默停在 PENDING（不报错、不崩溃，只是不加载）；信任围栏同步改读 `ctx.webStartup.trustedHosts`。
+
 ## [0.15.1] - 2026-09-29
 
 ### Fixed

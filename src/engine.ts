@@ -18,6 +18,7 @@ import { JsonStorageBackend } from '@deepseek-ai/dsh-storage-json'
 import { bm25FieldScores, cosineSimilarity, rrfFuse } from './bm25.ts'
 import { parsePromptFile, scanPromptDir, writePromptFile, type PromptFile } from './prompt-files.ts'
 import { detectSensitive } from './quarantine.ts'
+import type { MemoryBackupConfig } from './backup.ts'
 import { SELF_VERSION } from './self.ts'
 import { ANCHOR_KINDS, anchorHolds } from './anchors.ts'
 import { blockSchema, describeIssues } from './schema.ts'
@@ -488,6 +489,12 @@ export interface MemoryConfig {
   /** 全局提示词模板根目录（0.6.0）；默认 `$DSH_HOME/prompt-library`。
    *  project 模板随工作区（`<workspace>/.dsh/prompt-library`，与记忆同构）。 */
   promptGlobalRoot?: string
+  /**
+   * 定时备份（2026-10-18 事故后新增）：把 `memory.json` 与 `memory_project_*.json`
+   * 复制到 `DSH_HOME` 之外的目录，默认每小时一份、保留 14 份。
+   * 实现只读文件、只复制，见 `backup.ts` 的文件头。
+   */
+  backup?: MemoryBackupConfig
   /**
    * 查询日志文件路径（2026-09-15 §六.6）；默认为全局存储根下的 `query-log.json`
    * ——即与 `memory.json` **同目录**（`$DSH_HOME/storages/query-log.json`），不落子目录。

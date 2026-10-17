@@ -17,7 +17,7 @@ async function setup(extra: MemoryConfig = {}) {
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRegistry)
   ctx.provide('webServer' as never, { register: () => () => {} } as never)
-  ctx.provide('webRuntime' as never, { trustedHosts: [] } as never)
+  ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
   const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-global-'))
   const promptRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-prompt-'))
   const workspaceA = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-a-'))

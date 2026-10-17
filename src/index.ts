@@ -5,12 +5,15 @@
  * model tools, a stable guidance section, and a recall context.
  */
 
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { MemoryEngine } from './engine.ts'
 import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
+import { runMemoryBackup } from './backup.ts'
 import { ANCHOR_KINDS } from './anchors.ts'
 import type { MemoryAnchor } from './anchors.ts'
 import { mountMemoryApi } from './routes.ts'
@@ -32,7 +35,7 @@ export { MemoryId } from './engine.ts'
 export { bm25FieldScores, bm25Scores, cosineSimilarity, rrfFuse, tokenize } from './bm25.ts'
 
 export const name = 'dsh-memory'
-export const inject = ['storage', 'systemPrompt', 'tools', 'webServer', 'webRuntime']
+export const inject = ['storage', 'systemPrompt', 'tools', 'webServer', 'webStartup']
 
 /**
  * 本次挂载实际注册的工具名，按注册顺序。
@@ -820,4 +823,32 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     },
     presentCall: () => present('Sweep memory', 'other', 'read-only'),
   }))
+
+  // 定时备份（2026-10-18 事故后新增）：只读复制，绝不走引擎的写入路径。
+  // 首次延迟 1 分钟避开启动高峰；此后按 `backup.intervalMinutes` 重复；`unref` 不挡进程退出。
+  const backup = config?.backup
+  if (backup?.enabled !== false) {
+    const targetRoot = backup?.targetRoot ?? join(homedir(), '.dsh-backups', 'memory')
+    const intervalMs = Math.max(1, backup?.intervalMinutes ?? 60) * 60_000
+    const keep = Math.max(1, backup?.keep ?? 14)
+    const roots = {
+      globalRoot: config?.globalRoot ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storages'),
+      projectRoot: config?.projectRoot ?? join(process.cwd(), '.dsh', 'storages'),
+    }
+    ctx.effect(() => {
+      const first = setTimeout(() => {
+        runMemoryBackup({ ...roots, targetRoot, keep })
+      }, 60_000)
+      const timer = setInterval(() => {
+        runMemoryBackup({ ...roots, targetRoot, keep })
+      }, intervalMs)
+      timer.unref()
+      return () => {
+        clearTimeout(first)
+        clearInterval(timer)
+        // 关闭时补一次：定时器只在运行期间生效，关 DSH 前最后一段变更靠这里兜住。
+        runMemoryBackup({ ...roots, targetRoot, keep })
+      }
+    })
+  }
 }

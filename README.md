@@ -85,6 +85,27 @@ DSH 存储层的写入是「读—改—写全量覆盖」，且官方两个后�
 
 **未覆盖**：`workspace.json`（工作区登记）由 DSH 自己的 workspace 服务写，插件层够不着，仍会被双实例互相覆盖；根因处置在上游——[discussion #6882](https://github.com/deepseek-ai/deepseek-harness/discussions/6882)。当前防线是轮转快照备份（SSiD 侧 `shell/scripts/backup-storages.mjs` + 计划任务）。
 
+## 定时备份（2026-10-18）
+
+**动机**：2026-10-18 的事故——`.dsh` 下的 storages 被外部整目录删除后，本插件的写入路径（读—改—写全量覆盖）在空磁盘上把内存里的 global 记忆覆盖成一条；而当时 `memory.json` **没有任何一份存在于 `.dsh` 之外**，无从恢复。
+
+**机制**：插件启动后每小时（可配）把记忆文件**只读复制**到 `<home>/.dsh-backups/memory/<YYYYMMDD-HHmmss>/`，并写一份 `manifest.json` 记录来源与文件清单。**插件关闭（dispose）时再补一次**——定时器只在运行期间生效，关 DSH 前最后一段变更靠这一次兜住。保留最近 14 份（可配），超期自动清理。
+
+**无界面**：这是行为类功能，不新增按钮、面板或设置项——行为效果即上面那段：部署后 `~/.dsh-backups/memory/` 下每小时多一个目录，目录里是当次复制出的 `memory.json`、`memory_project_*.json` 与 `manifest.json`。
+
+| 项 | 默认值 |
+|---|---|
+| 备份内容 | `memory.json`（global）+ `memory_project_*.json`（project） |
+| 目标目录 | `~/.dsh-backups/memory/<时间戳>/`（**在 `DSH_HOME` 之外**） |
+| 间隔 | 60 分钟（首次延迟 1 分钟）；**插件关闭时另补一次** |
+| 保留 | 最近 14 份 |
+| 失败行为 | 只写日志，不影响记忆读写与启动 |
+
+**边界**：
+
+- 只备份**当前工作区**的 project 文件（`<cwd>/.dsh/storages/`）；其它工作区的 project 记忆不在备份范围。
+- 只读文件、只复制——**绝不复用引擎的写入路径**。写路径会先 `reload()` 再合并，磁盘缺失时它会把内存覆盖掉，正是这次事故的成因；备份不能走同一条路。
+
 ## 使用流程（写入即生效，人为例外干预）
 
 提示词模板库（0.6.0）：`prompt_search / prompt_get / prompt_list / prompt_add` 四个工具管理**模板库**——
@@ -129,6 +150,12 @@ memory_forget        →  随时删除（删除始终是人的动作）
     semanticTopK: 5              # 语义侧参与融合的 topK（仅配置 embeddings 时生效）
     # 混合语义检索（可插拔；缺省 = 纯 BM25）
     # embeddings: { embed: '...' 提供 embed(texts) 的宿主函数 或 插件名 ... }
+    # 定时备份（2026-10-18；缺省启用，目标在 DSH_HOME 之外）
+    backup:
+      intervalMinutes: 60    # 间隔（分钟）
+      keep: 14               # 保留份数
+      # targetRoot: 'D:/dsh-backups/memory'   # 自定义备份根
+      # enabled: false        # 关掉
 ```
 
 `embeddings` 接受 `{ embed(texts): Promise<number[][]>, similarity? }` 对象——由宿主装配层提供嵌入实现（如 DeepSeek 嵌入端点）；配置后 `memory_search` 以 BM25 + 语义 RRF 融合，向量增量生成并持久化，嵌入调用失败自动降级为纯 BM25。

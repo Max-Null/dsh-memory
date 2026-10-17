@@ -74,7 +74,7 @@ describe('记忆索引行（①）', () => {
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRegistry)
     ctx.provide('webServer' as never, { register: () => () => {} } as never)
-    ctx.provide('webRuntime' as never, { trustedHosts: [] } as never)
+    ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
     const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-index-'))
     const workspace = await mkdtemp(join(tmpdir(), 'dsh-memory-index-ws-'))
     const fiber = await ctx.plugin(plugin, { globalRoot })
