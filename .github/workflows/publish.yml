@@ -1,10 +1,10 @@
-# 发布 @max-null/dsh-jubensha 到 npm。
+# 发布 @max-null/dsh-memory 到 npm。
 #
 # 只开 workflow_dispatch —— 发布的控制点保持在「人主动触发一次」。
 # 链路稳定后再考虑加 `push: tags: ['v*']`：那会把控制点从「执行 publish」
 # 挪到「打 tag」，与手册铁律 9（npm publish 由用户手动）的措辞要一起改写。
 #
-# 需要仓库 secret：NPM_TOKEN（granular access token，限本包、带 publish 权限）。
+# 凭据来自 OIDC（npm 侧 Trusted Publisher 绑定本仓 + 本 workflow），不需要仓库 secret。
 name: publish
 
 on:
