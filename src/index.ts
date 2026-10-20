@@ -156,6 +156,13 @@ const HIT_SCHEMA = {
 } as const
 
 /**
+ * `memory_search` 的默认返回上限（0 = 不限）。宽查询会命中大半个库（本机 279 条库实测
+ * 命中面 35%–84%），返回体随库线性增长；20 条仍覆盖"有答案价值"的部分，20 名之后
+ * 分数已趋同（设计依据见 docs/设计/2026-10-21-memory-search-结果截断-设计方案.md）。
+ */
+const DEFAULT_SEARCH_LIMIT = 20
+
+/**
  * 体检报告的输出（0.12.0）：四类清单一律只读。`summary` 与注入行同量级，直接念给人听
  * 不失真——这个工具的主要用法就是「你问起时我念给你看」。
  */
@@ -554,23 +561,28 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
 
   ctx.tools.register(defineTool({
     name: registered('memory_search'),
-    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. 按关键词检索记忆（中文 2-gram + 关键词加权；配置嵌入时含语义融合；含待审核条目，被隔离的除外）。',
+    description: 'Recall stored memories by keyword. Deterministic literal matching — a miss means no stored term matched the query. Returns at most `limit` hits (default 20; 0 = no limit) — when the count equals limit there may be more. Narrow multi-word queries rank far better than one common token. 按关键词检索记忆（中文 2-gram + 关键词加权；配置嵌入时含语义融合；含待审核条目，被隔离的除外）。最多返回 limit 条（默认 20；0 = 不限），条数等于 limit 时可能还有更多；多词窄查询比单个常用词排序好得多。',
     parameters: {
       query: { type: 'string', required: true, description: 'Keyword query. 关键词查询.' },
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
       status: { type: 'string', enum: ['suggested', 'approved'], description: 'Restrict to one review status. 限定审核状态.' },
       kind: { type: 'string', enum: ['fact', 'prompt'], description: 'Restrict by record kind — fact (memories, default) or prompt (templates; use prompt_search instead). 按记录类别过滤：fact=记忆（默认）/ prompt=模板（模板请用 prompt_search）.' },
+      limit: { type: 'integer', default: DEFAULT_SEARCH_LIMIT, description: 'Maximum hits to return (default 20; 0 = no limit; negative falls back to 20). 最多返回条数（默认 20；0 = 不限；负数按 20）.' },
     },
     output: {
       schema: { type: 'array', items: HIT_SCHEMA },
       render: (_args, value) => renderJson(value),
     },
     execute(args, exec) {
+      // 截断只在工具层：`memory.search()` 必须保持「全部正分命中」的语义，
+      // prompt_search 依赖它的全量结果给模板排序（本文件下方 prompt_search 的 hitIds）。
+      const requested = args.limit ?? DEFAULT_SEARCH_LIMIT
+      const limit = requested < 0 ? DEFAULT_SEARCH_LIMIT : requested
       return memory.search(args.query, {
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.kind === undefined ? {} : { kind: args.kind },
-      }, execProjectCwd(exec)).then(hits => hits.map(hitValue))
+      }, execProjectCwd(exec)).then(hits => (limit === 0 ? hits : hits.slice(0, limit)).map(hitValue))
     },
     presentCall: args => present('Search memory', 'read', args.query),
   }))

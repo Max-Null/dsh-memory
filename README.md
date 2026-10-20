@@ -117,6 +117,7 @@ md 文件是唯一事实源（`~/.dsh/prompt-library/*.md` 为 global；`<worksp
 模型 memory_save     →  status: approved，立即生效；命中密钥/凭据规则则隔离（不进检索也不进注入）
                         给 injected 则同时钉住常驻（0.8.0），不受自动规则影响
 memory_search        →  关键词/语义召回（只搜记忆；模板走 prompt_search 通道，不会混进候选池）
+                        默认最多返回 20 条，`limit: 0` 取消上限；条数等于 limit 时可能还有更多
 人（面板 / 开关）     →  钉住 / 删除 / 放行隔离记录 / 回滚
 memory_forget        →  随时删除（删除始终是人的动作）
 ```

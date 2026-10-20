@@ -447,6 +447,53 @@ describe('dsh-memory plugin', () => {
     expect(after?.injected).toBe(false)                   // 但状态一动不动
   })
 
+  it('0.17.0: memory_search 默认截断到 20 条；limit 归一并只作用于工具层', async () => {
+    const { ctx, fiber } = await setup()
+    for (let i = 0; i < 25; i++) {
+      await ctx.memory.remember({ content: `alpha note ${i}`, keywords: ['alpha'] })
+    }
+    const tool = ctx.tools.get('memory_search')
+    const search = async (args: Record<string, unknown>): Promise<Array<{ record: { content: string }, score: number }>> =>
+      await tool?.execute?.(args, {} as never) as Array<{ record: { content: string }, score: number }>
+
+    // engine 层不截断：它是 prompt_search 的排序来源，截断只属于工具层
+    const all = await ctx.memory.search('alpha')
+    expect(all.length).toBe(25)
+
+    const byDefault = await search({ query: 'alpha' })
+    expect(byDefault).toHaveLength(20)
+    expect(byDefault.map(hit => hit.record.content)).toEqual(all.slice(0, 20).map(hit => hit.record.content))
+
+    expect(await search({ query: 'alpha', limit: 0 })).toHaveLength(25)
+    expect(await search({ query: 'alpha', limit: 5 })).toHaveLength(5)
+    expect(await search({ query: 'alpha', limit: 100 })).toHaveLength(25)  // 不补空
+    expect(await search({ query: 'alpha', limit: -1 })).toHaveLength(20)   // 负值按默认
+    await fiber.dispose()
+  })
+
+  it('0.17.0: 截断不改变命中记账（仍只记 BM25 前 5）', async () => {
+    const { ctx, fiber } = await setup()
+    for (let i = 0; i < 10; i++) {
+      await ctx.memory.remember({ content: `alpha note ${i}`, keywords: ['alpha'] })
+    }
+    await ctx.tools.get('memory_search')?.execute?.({ query: 'alpha' }, {} as never)
+    const marked = (await ctx.memory.list()).filter(record => (record.hitCount ?? 0) > 0)
+    expect(marked).toHaveLength(5)
+    await fiber.dispose()
+  })
+
+  it('0.17.0: memory_search 的 limit 不影响 prompt_search（后者按全量命中排序）', async () => {
+    const promptRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-prompt-'))
+    const { ctx, fiber } = await setup({ promptGlobalRoot: promptRoot })
+    for (let i = 0; i < 25; i++) {
+      await ctx.memory.promptAdd({ name: `模板${i}`, content: `alpha 正文 ${i}`, tags: ['alpha'] })
+    }
+    const out = await ctx.tools.get('prompt_search')?.execute?.({ query: 'alpha' }, {} as never) as Array<unknown>
+    // 若截断写进了 engine，命中模板会沉到未命中模板之后（或总数被截到 20）
+    expect(out).toHaveLength(25)
+    await fiber.dispose()
+  })
+
   it('0.12.0: 命中不再改写既有的注入状态（含 injectedAuto: true 的历史记录）', async () => {
     const { ctx, globalRoot } = await setup()
     const record = await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })
