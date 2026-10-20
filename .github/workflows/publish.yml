@@ -55,7 +55,8 @@ jobs:
         run: npm publish --provenance --access public
 
       # tag 与 Release 各自幂等：已存在就跳过，不覆盖已有指向（重复运行要失败可见，
-      # 而不是把 tag 悄悄挪到另一个 commit）。Release notes 取自 CHANGELOG 的同版本段。
+      # 而不是把 tag 悄悄挪到另一个 commit）。Release notes 取自 CHANGELOG 的同版本段；
+      # 没有对应段（或没有 CHANGELOG）时退回 GitHub 自动生成的 notes。
       - name: tag and release
         if: ${{ inputs.dry-run != true }}
         env:
@@ -70,8 +71,13 @@ jobs:
             git push origin "$TAG"
           fi
           node scripts/release-notes.mjs "$VERSION" > /tmp/release-notes.md
+          if [ -s /tmp/release-notes.md ]; then
+            NOTES=(--notes-file /tmp/release-notes.md)
+          else
+            NOTES=(--generate-notes)
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists — skipping release create"
           else
-            gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md
+            gh release create "$TAG" --title "$TAG" "${NOTES[@]}"
           fi
