@@ -494,6 +494,49 @@ describe('dsh-memory plugin', () => {
     await fiber.dispose()
   })
 
+  it('0.18.0: 钉入常驻时返回预算占用，未钉时不带', async () => {
+    const { ctx, fiber } = await setup({ injectionBudget: 300 })
+    const save = ctx.tools.get('memory_save')
+
+    const saved = await save?.execute?.({ content: 'alpha rule', keywords: ['alpha'], injected: true }, {} as never) as {
+      injected: boolean
+      resident?: { total: number, injected: number, omitted: number, budget?: number }
+    }
+    expect(saved.injected).toBe(true)
+    expect(saved.resident?.total).toBe(1)
+    expect(saved.resident?.injected).toBe(1)
+    expect(saved.resident?.omitted).toBe(0)
+    expect(saved.resident?.budget).toBe(300)
+
+    const plain = await save?.execute?.({ content: 'plain note' }, {} as never) as { resident?: unknown }
+    expect(plain.resident).toBeUndefined()
+    await fiber.dispose()
+  })
+
+  it('0.18.0: 钉满后新钉入的常驻如实报告被挤出的条数', async () => {
+    const { ctx, fiber } = await setup({ injectionBudget: 200 })
+    const save = ctx.tools.get('memory_save')
+    for (let i = 0; i < 5; i++) {
+      await save?.execute?.({ content: `rule ${i} `.repeat(20), keywords: ['rule'], injected: true }, {} as never)
+    }
+    const last = await save?.execute?.({ content: 'rule final '.repeat(20), keywords: ['rule'], injected: true }, {} as never) as {
+      resident: { total: number, injected: number, omitted: number }
+    }
+    expect(last.resident.total).toBe(6)
+    expect(last.resident.omitted).toBeGreaterThan(0)
+    // 与注入侧同一个 renderInjection：进场 + 出局 = 候选总数
+    expect(last.resident.injected + last.resident.omitted).toBe(last.resident.total)
+    await fiber.dispose()
+  })
+
+  it('0.18.0: memory_update 改内容时若仍是常驻，同样返回占用', async () => {
+    const { ctx, fiber } = await setup()
+    const saved = await ctx.tools.get('memory_save')?.execute?.({ content: 'rule', keywords: ['rule'], injected: true }, {} as never) as { id: string }
+    const updated = await ctx.tools.get('memory_update')?.execute?.({ id: saved.id, content: 'rule v2' }, {} as never) as { resident?: { total: number } }
+    expect(updated.resident?.total).toBe(1)
+    await fiber.dispose()
+  })
+
   it('0.12.0: 命中不再改写既有的注入状态（含 injectedAuto: true 的历史记录）', async () => {
     const { ctx, globalRoot } = await setup()
     const record = await ctx.memory.remember({ content: 'alpha beta', keywords: ['alpha'] })

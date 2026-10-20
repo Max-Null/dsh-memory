@@ -116,6 +116,8 @@ md 文件是唯一事实源（`~/.dsh/prompt-library/*.md` 为 global；`<worksp
 ```
 模型 memory_save     →  status: approved，立即生效；命中密钥/凭据规则则隔离（不进检索也不进注入）
                         给 injected 则同时钉住常驻（0.8.0），不受自动规则影响
+                        钉成常驻时返回 `resident`（total / injected / omitted / budget）——
+                        钉的那一刻就知道挤掉了几条，不必等下一轮的出局诊断行
 memory_search        →  关键词/语义召回（只搜记忆；模板走 prompt_search 通道，不会混进候选池）
                         默认最多返回 20 条，`limit: 0` 取消上限；条数等于 limit 时可能还有更多
                         命中记账只记 BM25 前 5 名——`hitCount` 是"排前"的信号，不是"被检索到"的面；

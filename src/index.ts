@@ -156,6 +156,33 @@ const HIT_SCHEMA = {
 } as const
 
 /**
+ * `memory_save` / `memory_update` 的输出：记录本体 +（操作后仍是常驻时）预算占用快照。
+ *
+ * 单列一份而不往 {@link RECORD_SCHEMA} 里加：`memory_list` 一次返回全库，每条都带
+ * 一份占用快照既冗余，也与「这条记录本身」无关。预算快照只在**钉入/仍常驻**时出现，
+ * 因为那正是「挤掉别人」这个决定发生的那一刻——钉完再等下一轮的出局诊断行，人已经
+ * 想不起来是哪一次钉入造成的。
+ */
+const SAVED_RECORD_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ...RECORD_SCHEMA.properties,
+    resident: {
+      type: 'object',
+      additionalProperties: false,
+      description: '钉入之后的常驻注入占用（仅当该记录为常驻时出现）：total 候选条数、injected 本轮实际进场、omitted 被预算挤出、budget 字符预算。',
+      properties: {
+        total: { type: 'number', required: true },
+        injected: { type: 'number', required: true },
+        omitted: { type: 'number', required: true },
+        budget: { type: 'number' },
+      },
+    },
+  },
+} as const
+
+/**
  * `memory_search` 的默认返回上限（0 = 不限）。宽查询会命中大半个库（本机 279 条库实测
  * 命中面 35%–84%），返回体随库线性增长；20 条仍覆盖"有答案价值"的部分，20 名之后
  * 分数已趋同（设计依据见 docs/设计/2026-10-21-memory-search-结果截断-设计方案.md）。
@@ -360,6 +387,27 @@ const GUIDANCE =
   + 'long-unused ones, candidates that keep being retrieved without being pinned, and budget usage). '
   + '库变大之后用 memory_sweep 做只读体检——失效记录（带原因）、久未命中、被反复检索却未常驻的候选、以及预算占用。'
 
+/**
+ * 钉入常驻后的预算占用快照（`memory_save` / `memory_update` 输出用）。刻意复用注入侧的
+ * `renderInjection`：两处各算一套的话，「工具里显示的占用」与「下一轮实际注入」会给出
+ * 不同的数字，而人恰恰是拿前者的数字去判断要不要钉的。
+ */
+function residentUsage(
+  memory: MemoryEngine,
+  projectCwd: string | undefined,
+  budget: number | null,
+  summaryChars: number,
+): { total: number, injected: number, omitted: number, budget?: number } {
+  const records = memory.recallRecords(projectCwd)
+  const rendered = renderInjection(records, budget, summaryChars)
+  return {
+    total: records.length,
+    injected: rendered.lines.length,
+    omitted: rendered.omitted,
+    ...rendered.budget === null ? {} : { budget: rendered.budget },
+  }
+}
+
 // 0.5.1：`memory:recall` provider 可经 AssembleContext.agent 拿到当前会话
 // 的 header.cwd——注入 = global + 当前会话工作区的 approved+injected
 // （0.3.4 起工作区记忆就按会话 cwd 路由；provider 是同步回调，只读已
@@ -512,10 +560,11 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       },
     },
     output: {
-      schema: RECORD_SCHEMA,
+      schema: SAVED_RECORD_SCHEMA,
       render: (_args, value) => renderJson(value),
     },
     execute(args, exec) {
+      const cwd = execProjectCwd(exec)
       return memory.remember({
         content: args.content,
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
@@ -525,7 +574,14 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         ...args.anchor === undefined
           ? {}
           : { anchor: args.anchor as MemoryAnchor },
-      }, execProjectCwd(exec)).then(recordValue)
+      }, cwd).then(record => {
+        const value = recordValue(record)
+        // 钉常驻的那一刻就把「挤掉了几条」交给人看：等到下一轮的出局诊断行，
+        // 人已经想不起来是哪一次钉入造成的。
+        return record.injected
+          ? { ...value, resident: residentUsage(memory, cwd, injectionBudget, summaryChars) }
+          : value
+      })
     },
     presentCall: args => present('Save memory', 'other', args.content),
   }))
@@ -783,16 +839,23 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       },
     },
     output: {
-      schema: RECORD_SCHEMA,
+      schema: SAVED_RECORD_SCHEMA,
       render: (_args, value) => renderJson(value),
     },
     execute(args, exec) {
       const cwd = execProjectCwd(exec)
       const id = args.id as never
+      const settle = (record: MemoryRecord) => {
+        const value = recordValue(record)
+        // 改内容也会改变注入占用的字符数：只要这条仍是常驻，就把占用一起交回去。
+        return record.injected
+          ? { ...value, resident: residentUsage(memory, cwd, injectionBudget, summaryChars) }
+          : value
+      }
       // 三种动作互斥，按 retract > supersedes > update 的次序取第一个（与工具描述一致）：
       // 前两个是「标状态」，第三个才是「改内容」。同时给多个时以更重的动作为准。
-      if (args.retract !== undefined) return memory.retract(id, args.retract, cwd).then(recordValue)
-      if (args.supersedes !== undefined) return memory.supersede(id, args.supersedes as never, cwd).then(recordValue)
+      if (args.retract !== undefined) return memory.retract(id, args.retract, cwd).then(settle)
+      if (args.supersedes !== undefined) return memory.supersede(id, args.supersedes as never, cwd).then(settle)
       return memory.update(id, {
         ...args.content === undefined ? {} : { content: args.content },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
@@ -801,7 +864,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         ...args.anchor === undefined
           ? {}
           : { anchor: args.anchor as MemoryAnchor | null },
-      }, cwd).then(recordValue)
+      }, cwd).then(settle)
     },
     presentCall: args => present('Update memory', 'other', args.id),
   }))
