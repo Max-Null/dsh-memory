@@ -40,9 +40,30 @@ npm install @max-null/dsh-memory
 ## 提供的服务与工具
 
 - **服务** `ctx.memory`：`remember` / `list` / `search` / `forget` / `update` / `move` / `setStatus` / `setInjected` / `supersede` / `retract` / `sweep` / `demoteStale` / `verifyAnchors` / `reload` 等
-- **工具**（12 个）：`memory_save`、`memory_list`、`memory_search`、`memory_update`、`memory_confirm`、`memory_forget`、`memory_move`、`memory_sweep`，加提示词模板四件套 `prompt_search`、`prompt_get`、`prompt_list`、`prompt_add`
-- **注入**：`tool:memory` 指引 section（工具用法 + 常驻注入判据）+ `memory:self` 机制自述 + `memory:recall` 召回 context（global 的 `approved + injected` + 当前会话工作区的 `approved + injected`，带 `[memory:<id>:<namespace>]` 来源标记；摘要化 + 预算截断）
+- **工具**（14 个）：`memory_save`、`memory_list`、`memory_search`、`memory_update`、`memory_confirm`、`memory_forget`、`memory_move`、`memory_sweep`，提示词模板四件套 `prompt_search`、`prompt_get`、`prompt_list`、`prompt_add`，加日记两件套 `diary_read`、`diary_write`
+- **注入**：`tool:memory` 指引 section（工具用法 + 常驻注入判据）+ `memory:self` 机制自述 + `memory:recall` 召回 context（global 的 `approved + injected` + 当前会话工作区的 `approved + injected`，带 `[memory:<id>:<namespace>]` 来源标记；摘要化 + 预算截断）+ `memory:diary` 指针（只有目录与最近日期，不含正文）
 - **检索**：BM25（CJK 单字 + 2-gram，content 与 keywords 字段分离加权；中文多字查询精度显著优于单字切分）；可选语义融合（见「可选配置」）
+
+## 日记（第二套记忆，2026-10-24）
+
+记忆与日记是**两套东西**，不是同一套的两个视图：
+
+| | 记忆 | 日记 |
+|---|---|---|
+| 写什么 | 从中得出了什么 | 今天发生了什么 |
+| 准入判据 | 有用性 | 无——写就是了 |
+| 怎么被读到 | 检索命中 / 常驻摘要 | 整篇读 |
+| 存储 | `ctx.storage` 里的 JSON 块 | `<DSH_HOME>/diary/YYYY-MM-DD.md` |
+
+**日记正文永远不经过 `ctx.storage`**：那条路的写入模型是 *writer per process and last-write-wins*，而日记不该被另一个实例的「读—改—写」周期吃掉。日记也不进检索、不占常驻注入预算——注入里只有一行指针（目录 + 最近日期）。
+
+- 一天一个文件，按 `## HH:MM` 分段；同日多场对话是**追加**，不覆盖。
+- 工具：`diary_read`（省略 `date` 读最近一篇）、`diary_write`（写一段）。
+- 写进日记的是**经历**：发生了什么（有细节）、我怎么想（可以有情绪、可以没结论）、关于他（他说了什么、我注意到了什么）。**不写任务清单**（那是 git log），**不写结论**（那是 `memory_save`）。
+- 提醒：指针行在距上次写日记超过 6 小时后附带一句提醒，同一次挂载只出现一次。
+- **开关**：插件页的「日记」开关（`diary.enabled`，默认开）。关掉后两个工具都拒绝执行、指针不注入；**已有 md 文件原样保留**，不会被删。
+
+设计依据、取舍与未决项见 [`docs/设计/2026-10-24-日记机制-设计方案.md`](docs/设计/2026-10-24-日记机制-设计方案.md)。
 
 ## 两层存储（global / project）
 
@@ -161,6 +182,9 @@ memory_forget        →  随时删除（删除始终是人的动作）
       keep: 14               # 保留份数
       # targetRoot: 'D:/dsh-backups/memory'   # 自定义备份根
       # enabled: false        # 关掉
+    # 日记开关（2026-10-24；也可在插件设置页里直接改，等价）
+    diary:
+      enabled: true
 ```
 
 `embeddings` 接受 `{ embed(texts): Promise<number[][]>, similarity? }` 对象——由宿主装配层提供嵌入实现（如 DeepSeek 嵌入端点）；配置后 `memory_search` 以 BM25 + 语义 RRF 融合，向量增量生成并持久化，嵌入调用失败自动降级为纯 BM25。

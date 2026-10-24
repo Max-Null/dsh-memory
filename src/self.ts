@@ -9,6 +9,8 @@
  * （该规则已取消，命中只喂候选提示）；注入取舍依据由「最近使用」改为「最近更新」。
  * 0.12.1：锚点那句补上「可以用 memory_update 改写或清除」——此前模型读得到锚点的作用，
  * 却没有任何改它的手段，读起来像一条只能写死一次的东西。
+ * 0.19.0：工具清单 12 → 14（补 `diary_read` / `diary_write`）；新增日记通道说明——
+ * 它与记忆分开存、不进检索、不占注入预算，写的是经历而不是任务清单。
  */
 import { createRequire } from 'node:module'
 
@@ -25,7 +27,8 @@ export const SELF_VERSION = ((): string => {
 
 export const SELF_DESCRIPTION =
   `[记忆系统自述] 本环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
-  + '你有 12 个工具：**记忆工具** memory_save / memory_search / memory_list / memory_update / memory_confirm / memory_forget / memory_move / memory_sweep（`memory_confirm` 仅在用户明确要求放行隔离记录时用；`memory_move` 把放错了层的记忆移到 global、当前工作区或相对祖先；`memory_sweep` 是只读体检——失效清单、久未命中、候选与预算占用，不修改任何状态）；**提示词模板工具** prompt_search / prompt_get / prompt_list / prompt_add（模板是 md 文件、**永不注入**，走这条通道，不会混进记忆检索）。'
+  + '你有 14 个工具：**记忆工具** memory_save / memory_search / memory_list / memory_update / memory_confirm / memory_forget / memory_move / memory_sweep（`memory_confirm` 仅在用户明确要求放行隔离记录时用；`memory_move` 把放错了层的记忆移到 global、当前工作区或相对祖先；`memory_sweep` 是只读体检——失效清单、久未命中、候选与预算占用，不修改任何状态）；**提示词模板工具** prompt_search / prompt_get / prompt_list / prompt_add（模板是 md 文件、**永不注入**，走这条通道，不会混进记忆检索）；'
+  + '**日记工具** diary_read / diary_write：日记是 md 文件，落在 `<DSH_HOME>/diary`，与记忆**分开存、不进检索、不占注入预算**。记的是经历——发生了什么（有细节）、我怎么想（可以有情绪、可以没结论）、关于他（他说了什么、我注意到了什么）；不是任务清单（那是 git log），也不是结论（那是 memory_save）。读它不吃预算，需要时整篇读。'
   + '记忆分两层：`global` 跨项目（偏好 / 习惯 / 环境知识），`project` 跟随工作区（落在 `<cwd>/.dsh/storages/`，随 git 提交分享）。'
   + '**何时写入**（不必刻意找机会，遇到下面这些就动手）：'
   + '① 用户表达长期偏好或约定（「以后都…」「记住…」「我们的规矩是…」）；'

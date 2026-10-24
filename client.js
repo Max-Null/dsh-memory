@@ -1031,6 +1031,85 @@ function SettingsMemoryView(props) {
     cwd: currentSessionCwd(props.ctx)
   });
 }
+function DiarySettingsCard(props) {
+  const { form } = props;
+  const [enabled, setEnabled] = (0, import_react.useState)(true);
+  (0, import_react.useEffect)(() => {
+    const read = () => {
+      setEnabled(form.getSnapshot()?.value?.diary?.enabled ?? true);
+    };
+    read();
+    const off = form.subscribe(read);
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [form]);
+  return (0, import_react.createElement)(
+    "div",
+    {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "12px 0",
+        borderTop: "1px solid var(--dsw-alias-border-l2, #1e2836)"
+      }
+    },
+    (0, import_react.createElement)(
+      "div",
+      { style: { minWidth: 0 } },
+      (0, import_react.createElement)("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d8e0ea)" } }, "\u65E5\u8BB0"),
+      (0, import_react.createElement)(
+        "div",
+        { style: { fontSize: 11.5, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 3, lineHeight: 1.5 } },
+        "\u672C\u673A\u5199\u65E5\u8BB0\u3002\u5173\u6389\u540E\u65E5\u8BB0\u5DE5\u5177\u62D2\u7EDD\u6267\u884C\u3001\u4E0D\u518D\u6CE8\u5165\u6307\u9488\uFF1B\u5DF2\u6709\u65E5\u8BB0\u6587\u4EF6\u539F\u6837\u4FDD\u7559\uFF0C\u4E0D\u4F1A\u88AB\u5220\u3002"
+      )
+    ),
+    (0, import_react.createElement)(
+      "button",
+      {
+        type: "button",
+        role: "switch",
+        "aria-checked": enabled,
+        "aria-label": "\u65E5\u8BB0\u5F00\u5173",
+        onClick: () => {
+          try {
+            const pending = form.mutate([{ op: "set", path: ["diary", "enabled"], value: !enabled }]);
+            void Promise.resolve(pending).catch((error) => {
+              console.warn("dsh-memory: \u65E5\u8BB0\u5F00\u5173\u5199\u5165\u5931\u8D25", error);
+            });
+          } catch (error) {
+            console.warn("dsh-memory: \u65E5\u8BB0\u5F00\u5173\u5199\u5165\u629B\u9519", error);
+          }
+        },
+        style: {
+          flex: "none",
+          width: 40,
+          height: 22,
+          borderRadius: 11,
+          border: "none",
+          cursor: "pointer",
+          position: "relative",
+          transition: "background 120ms",
+          background: enabled ? "var(--dsw-alias-state-business-primary, #4FC3F7)" : "var(--dsw-alias-border-l2, #1e2836)"
+        }
+      },
+      (0, import_react.createElement)("span", {
+        style: {
+          position: "absolute",
+          top: 3,
+          left: enabled ? 21 : 3,
+          width: 16,
+          height: 16,
+          borderRadius: "50%",
+          background: "#fff",
+          transition: "left 120ms"
+        }
+      })
+    )
+  );
+}
 function apply(ctx) {
   const face = ctx;
   const locale = face.get?.("locale");
@@ -1052,6 +1131,19 @@ function apply(ctx) {
       ctx
     })));
     face.effect?.(() => registerSettingsNavIcon(() => STRINGS[localeId].tabMemory), "dsh-memory: settings navigation icon");
+  }
+  try {
+    const configForms = face.get?.("configForms");
+    const settingsForm = configForms?.get?.("memory");
+    if (slots?.inject !== void 0 && settingsForm !== void 0) {
+      slots.inject("plugins.bundle.config", () => slots.register({
+        name: "plugins.bundle.config",
+        key: "@max-null/dsh-memory",
+        inject: () => ({})
+      }, () => (0, import_react.createElement)(DiarySettingsCard, { form: settingsForm })));
+    }
+  } catch (error) {
+    console.warn("dsh-memory: \u65E5\u8BB0\u914D\u7F6E\u5361\u7247\u672A\u6CE8\u518C\uFF08\u4E0D\u5F71\u54CD\u8BB0\u5FC6\u4E0E\u65E5\u8BB0\u5DE5\u5177\uFF09", error);
   }
   const root = ctx;
   if (root.inject === void 0) return;

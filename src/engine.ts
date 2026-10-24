@@ -496,6 +496,15 @@ export interface MemoryConfig {
    */
   backup?: MemoryBackupConfig
   /**
+   * 日记开关的**部署默认值**（2026-10-24）。运行中的选择在面板里改，写入
+   * `$DSH_HOME/memory-settings.json`；两边都开才开——否则部署时关掉会被
+   * 使用者那一侧缺省的 `true` 翻回来。
+   *
+   * 关掉时日记工具会拒绝写入、不注入指针、也不提醒；已有的 md 文件原样保留
+   * （删除是使用者的动作，不该由开关代劳）。
+   */
+  diary?: { enabled?: boolean }
+  /**
    * 查询日志文件路径（2026-09-15 §六.6）；默认为全局存储根下的 `query-log.json`
    * ——即与 `memory.json` **同目录**（`$DSH_HOME/storages/query-log.json`），不落子目录。
    */

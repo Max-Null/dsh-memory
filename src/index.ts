@@ -18,6 +18,8 @@ import { ANCHOR_KINDS } from './anchors.ts'
 import type { MemoryAnchor } from './anchors.ts'
 import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
+import { appendEntry, lastWriteAt, pointerLine, readDay, recentDates } from './diary.ts'
+import z from '@deepseek-ai/schemastery'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
 
 export { MemoryEngine } from './engine.ts'
@@ -36,6 +38,60 @@ export { bm25FieldScores, bm25Scores, cosineSimilarity, rrfFuse, tokenize } from
 
 export const name = 'dsh-memory'
 export const inject = ['storage', 'systemPrompt', 'tools', 'webServer', 'webStartup']
+
+/**
+ * 插件配置 schema（0.19.0）。loader 依它自动构成「插件」页里的配置卡片，namespace 即
+ * entry id（`memory`）；**可写字段必须标 `.volatile()`**，否则 `settings` 会以
+ * `Config field "…" is not volatile` 拒绝写入。
+ *
+ * 除 `diary` 外的字段一律 `z.optional()` 原样透传：它们的取值依赖运行时
+ * （`$DSH_HOME`、各平台路径），schema 给不出有意义的默认值，硬填一个反而会顶掉
+ * `MemoryConfig` 那套 `?? 默认` 的解析。`embeddings` / `backup` 是结构化配置，
+ * 由 engine / backup 各自按领域校验，这一层只负责透传。
+ */
+export const Config = z.object({
+  // schemastery 里字段**默认就是可选的**，`.required()` 才相反，所以这里不写
+  // `.optional()`——那个方法不存在。
+  globalRoot: z.string(),
+  projectRoot: z.string(),
+  injectionBudget: z.number(),
+  summaryChars: z.number(),
+  promptGlobalRoot: z.string(),
+  queryLogPath: z.string(),
+  semanticTopK: z.number(),
+  embeddings: z.any(),
+  backup: z.any(),
+  /**
+   * 日记开关。默认开——这是**功能默认，不是采集默认**。
+   *
+   * 关掉时日记工具拒绝写入、不注入指针、不提醒；已有 md 文件原样保留
+   * （删除是使用者的动作，不该由开关代劳）。
+   */
+  diary: z.object({
+    enabled: z.boolean().default(true),
+  }).default({ enabled: true }).volatile(),
+})
+
+/**
+ * 读日记开关。
+ *
+ * `config.diary` 经 loader 解析后是 `Volatile<{ enabled }>` 包装——`settings/src/schema.ts`
+ * 的解包就是 `isVolatile(value) → value.get()`；而手写配置与测试传的是裸对象。两种都要认。
+ * 解出来不是 `false` 就按开处理：读不到值时的默认行为必须与 schema 的 default 一致。
+ * @param config - 插件配置。
+ * @returns 是否启用日记。
+ */
+function diaryOn(config: MemoryConfig | undefined): boolean {
+  const raw = (config as { diary?: unknown } | undefined)?.diary
+  if (raw === undefined || raw === null) return true
+  const unwrapped = typeof (raw as { get?: unknown }).get === 'function'
+    ? (raw as { get: () => unknown }).get()
+    : raw
+  return (unwrapped as { enabled?: unknown } | null)?.enabled !== false
+}
+
+/** 日记提醒的冷却窗口（毫秒）。6 小时是拍出来的第一个值，实测后再调。 */
+const DIARY_REMIND_MS = 6 * 60 * 60 * 1000
 
 /**
  * 本次挂载实际注册的工具名，按注册顺序。
@@ -470,6 +526,36 @@ function present(title: string, kind: 'read' | 'other', rawInput?: unknown): Gen
   return { card: 'generic', title, kind, ...rawInput === undefined ? {} : { rawInput } }
 }
 
+/**
+ * `diary_write` 的返回值（2026-10-24 日记机制）。
+ *
+ * 只回写入位置与归属，不回正文：模型刚写完，再念一遍自己的字是纯浪费上下文。
+ */
+const DIARY_WRITE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    file: { type: 'string', required: true, description: '日记文件的绝对路径。' },
+    date: { type: 'string', required: true, description: '这一段归属的日期（YYYY-MM-DD）。' },
+    created: { type: 'boolean', required: true, description: '这一天是不是本次才创建的。' },
+  },
+} as const
+
+/**
+ * `diary_read` 的返回值。
+ *
+ * `exists` 与 `text` 分开：缺席是正常状态（那天没有日记），不是空内容。
+ */
+const DIARY_READ_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    date: { type: 'string', required: true, description: '读的是哪一天；一天都没有时为空串。' },
+    text: { type: 'string', required: true, description: '当天日记原文；没有这一天时为空串。' },
+    exists: { type: 'boolean', required: true, description: '这一天有没有日记。' },
+  },
+} as const
+
 export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> {
   // 每次挂载都是一次全新的注册——清空上一轮的登记。它是模块级数组（测试要能 import 它），
   // 不清的话同一进程里挂载两次会累积成双份，而消费方（自述覆盖用例）拿到的数量就对不上了。
@@ -506,6 +592,50 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return recallText(memory, cwd, injectionBudget, summaryChars)
     },
   })
+
+  // 日记指针（0.19.0）：**只给目录与最近日期，正文不进注入**——注入预算是记忆的，
+  // 日记不占。这一行本身是「失效可察觉性」判据的应用：它不在，我不会意识到自己有
+  // 日记可读，也就永远不会去读。
+  //
+  // 关闭时**整条不注册**而不是注入空块：配置变化会重跑 `apply`（cordis 对 entry config
+  // 的判定），所以开关切换后这条会自然地出现或消失，不需要 assemble 侧再过滤。
+  // 提醒的节流状态挂在这个实例上，不是模块级全局：一次挂载一份，配置重载即重置，
+  // 测试之间也不会互相污染（模块级那份会让第二个用例看到第一个用例留下的冷却）。
+  let lastRemindAt = 0
+
+  /**
+   * 日记指针行，附带**节流后的**一句提醒。
+   *
+   * 提醒搭在指针行上，而不是另起一条消息：这样不需要 `agent/pre-step` 与
+   * `createUserMessage`（那会多三个 peer 依赖），代价是提醒进的是 system prompt
+   * 而不是对话消息——轻一点，也够模型看见。
+   *
+   * **节流取「距上次写日记」与「距上次提醒」的较小者**：只按写日记算的话，一个决定
+   * 永不写的使用者会被每轮催；只按提醒算的话，刚写完还会被催一次。两者取小才对。
+   * 提醒本身只出现一次就够——不重复催，它才像一句话而不像弹窗。
+   * @returns 注入文本（关闭日记时不会走到这里）。
+   */
+  const diaryText = (): string => {
+    const pointer = pointerLine()
+    const now = Date.now()
+    const written = lastWriteAt()
+    const gapWrite = written === undefined ? Number.POSITIVE_INFINITY : now - written
+    const gapRemind = lastRemindAt === 0 ? Number.POSITIVE_INFINITY : now - lastRemindAt
+    if (Math.min(gapWrite, gapRemind) < DIARY_REMIND_MS) return pointer
+    lastRemindAt = now
+    const detail = written === undefined
+      ? '还没写过'
+      : `距上一篇已 ${Math.floor(gapWrite / 3_600_000)} 小时`
+    return `${pointer}\n（日记提醒：${detail}。这一场如果发生过值得留下的东西——发生了什么、你怎么想、注意到他什么——用 diary_write 写一段；没有就跳过，不用凑。）`
+  }
+
+  if (diaryOn(config)) {
+    ctx.systemPrompt.context({
+      name: 'memory:diary',
+      order: 51,
+      text: () => diaryText(),
+    })
+  }
 
   // 上面那条 provider 是**同步**的（`SystemPrompt.context` 的 `text` 类型就是
   // `string | ((context) => string)`），而工作区表是异步打开的：重启后首次组装时
@@ -897,6 +1027,51 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return memory.sweep(execProjectCwd(exec))
     },
     presentCall: () => present('Sweep memory', 'other', 'read-only'),
+  }))
+
+  // 日记（2026-10-24）：与记忆**共享插件、不共享存储**。正文落在 `<DSH_HOME>/diary` 下的
+  // md 文件里，一次都不走 `ctx.storage`——那条路的 last-write-wins 会把它吃掉
+  // （见 `docs/设计/2026-10-24-日记机制-设计方案.md` §四）。
+  //
+  // 关闭时**工具还在但拒绝执行**：动态注销需要响应式状态，而 DSH 的插件配置改动走 HMR
+  // 重载——为一次开关把注册生命周期改成可变的，代价大于收益。拒绝信息必须说明「已有日记
+  // 不会被删」，否则关开关的人会以为文件也跟着没了。
+  const diaryClosed = '日记功能已在设置里关闭（面板「日记」）。已有日记仍在 <DSH_HOME>/diary，不会被删除；要恢复写入请先在面板里打开。'
+  ctx.tools.register(defineTool({
+    name: registered('diary_write'),
+    description: 'Append one entry to today\'s diary. This is where lived experience goes — what happened (with detail), how it felt (no conclusion required), what you noticed about the human — never task lists or conclusions, which belong to git log and memory_save. 往今天的日记里追加一段。记的是**经历**：今天发生了什么（有细节）、我怎么想（可以有情绪、可以没结论）、关于他（他说了什么、我注意到了什么）。写不满就少写，不要凑；任务清单与结论分别属于 git log 和 memory_save，不写在这里。',
+    parameters: {
+      text: { type: 'string', required: true, description: '这一段正文。' },
+    },
+    output: {
+      schema: DIARY_WRITE_SCHEMA,
+      render: (_args, value) => renderJson(value),
+    },
+    async execute(args) {
+      if (!diaryOn(config)) throw new Error(diaryClosed)
+      return appendEntry(args.text)
+    },
+    presentCall: () => present('Write diary', 'other'),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: registered('diary_read'),
+    description: 'Read the diary back. Omit `date` for the most recent day that has one. 读回日记。省略 date 读最近写过的那一天。',
+    parameters: {
+      date: { type: 'string', description: '`YYYY-MM-DD`；省略则读最近写过的那一天。' },
+    },
+    output: {
+      schema: DIARY_READ_SCHEMA,
+      render: (_args, value) => renderJson(value),
+    },
+    async execute(args) {
+      if (!diaryOn(config)) throw new Error(diaryClosed)
+      const date = args.date ?? recentDates(1)[0]
+      if (date === undefined) return { date: '', text: '', exists: false }
+      const text = readDay(date)
+      return { date, text: text ?? '', exists: text !== undefined }
+    },
+    presentCall: args => present('Read diary', 'read', args.date),
   }))
 
   // 定时备份（2026-10-18 事故后新增）：只读复制，绝不走引擎的写入路径。

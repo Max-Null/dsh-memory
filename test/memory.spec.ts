@@ -43,10 +43,12 @@ describe('dsh-memory plugin', () => {
     const self = assembly.contexts.find(context => context.name === 'memory:self')
     expect(self?.text).toContain('dsh-memory v')
     expect(self?.text).toContain('memory_update')
-    // 工具清单漏列的守卫（0.10.0 曾漏掉 prompt_* 系列、0.12.0 补了 memory_sweep）：
-    // 自述是模型行为的实际控制器，清单陈旧等于它按一份不存在的工具面行事。
+    // 工具清单漏列的守卫（0.10.0 曾漏掉 prompt_* 系列、0.12.0 补了 memory_sweep、
+    // 0.19.0 补 diary_*）：自述是模型行为的实际控制器，清单陈旧等于它按一份不存在的工具面行事。
+    // 数字对比登记表而非写死——写死的数字每加一个工具就要改一次，改的时候又容易顺手
+    // 把断言调成「通过」而不是「正确」。
     expect(self?.text).toContain('memory_sweep')
-    expect(self?.text).toContain('12 个工具')
+    expect(self?.text).toContain(`${plugin.registeredToolNames.length} 个工具`)
 
     await fiber.dispose()
     expect(ctx.tools.get('memory_save')).toBeUndefined()

@@ -4,6 +4,27 @@
 
 > **关于 git tag**：0.7.1 / 0.7.2 / 0.7.3 / 0.8.0 / 0.9.0 / 0.9.1 六个版本**没有对应的 git tag**。它们的改动在仓库里是一次性提交的（`42b08ab`「feat(memory): 0.7.1–0.9.2 累积改动」，21 文件 / 1482 行），git 历史中不存在这些版本各自的代码状态——给它们各打一个 tag 只能全部指向同一个 commit，那是假精确，所以不补。这六个版本在 npm 上都有记录（`npm view @max-null/dsh-memory versions`）；GitHub 的 Release 列表会跳过它们，缺口即由此而来。
 
+## [0.19.0] - 2026-10-24
+
+### Added
+
+**日记：第二套记忆。** 新增 `diary_read` / `diary_write`，正文落在 `<DSH_HOME>/diary/YYYY-MM-DD.md`。
+
+记忆与日记的差别不在存储，在**写的时候记什么**：记忆记「从中得出了什么」（准入判据是有用性），日记记「今天发生了什么」（没有准入判据）。`memory_save` 那套判据对「他说手麻了」这类经历本来就失效——那不是事实，是经历。
+
+- 一天一个文件，按 `## HH:MM` 分段；同日多场对话是**追加**，不覆盖。
+- 日记正文**不经过 `ctx.storage`**：那条路是 *writer per process and last-write-wins*，日记不该被另一个实例的「读—改—写」周期吃掉。
+- 不参与检索、不占常驻注入预算；注入里只有一行指针（目录 + 最近日期）。
+- 指针在距上次写日记超过 6 小时后附带一句提醒，同一次挂载只出现一次。
+
+**`Config` schema（schemastery）。** 本包此前只有 TS 接口 `MemoryConfig`，没有可被 loader 识别的配置 schema，因此在插件页里是空白。现在导出 `Config`，并把 `diary.enabled` 标 `.volatile()`——表单由 loader 依 schema 自动构成，写进 profile 的 `cordis.patch.yml`，本包不另设存储文件。
+
+### 边界
+
+- 关闭日记后两个工具**拒绝执行**而不是被注销：动态注销要响应式状态，而插件配置改动走 cordis 的 entry 重跑——为一次开关把注册生命周期做成可变的，代价大于收益。拒绝信息里写明「已有日记不会被删」。
+- 提醒搭在指针行上而不是 `agent/pre-step` 的消息：后者要引入 `dsh-llm` 的 `createUserMessage` 与三个 peer 依赖，而效果只是从「system prompt 里一句话」变成「对话里一条消息」。
+- 除 `diary` 外的配置字段一律透传（schemastery 字段默认可选），不加 `.default()`：它们的默认值依赖运行时（`$DSH_HOME`、平台路径），schema 里硬填一个会顶掉 `MemoryConfig` 的 `?? 默认` 解析。
+
 ## [0.18.0] - 2026-10-21
 
 ### Added

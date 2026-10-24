@@ -1010,6 +1010,81 @@ interface LocaleAwareContext {
   effect?: (exec: () => unknown, label?: string) => unknown
 }
 
+/**
+ * 插件配置表单的最小面（`ctx.configForms.get(ns)` 的返回值）。
+ *
+ * 只声明本卡片用到的三件：读快照、订阅变化、按路径写。`set(field, value)` 只接
+ * 单段标量字段（其 JSDoc 写明），嵌套的 `diary.enabled` 走 `mutate` 的路径操作。
+ */
+interface ConfigFormLike {
+  getSnapshot(): { value?: { diary?: { enabled?: boolean } } }
+  subscribe(listener: () => void): unknown
+  mutate(ops: Array<{ op: 'set', path: string[], value: unknown }>): unknown
+}
+
+/**
+ * 日记开关卡片（0.19.0）。
+ *
+ * **为什么要有它**：`Config` schema 只负责让 Host 侧认得这些字段，
+ * `@deepseek-ai/dsh-settings` 的 README 写明自动表单 `autoGenerate`「目前没有已发布的
+ * 客户端这样做」——**没有任何 UI 会自己把它画出来**。所以卡片必须插件自己注册，挂在
+ * 插件页详情里的 `plugins.bundle.config`（`node-appearance` / `chat-rail` 同款）。
+ */
+function DiarySettingsCard(props: { form: ConfigFormLike }): ReactNode {
+  const { form } = props
+  const [enabled, setEnabled] = useState(true)
+  useEffect(() => {
+    const read = (): void => { setEnabled(form.getSnapshot()?.value?.diary?.enabled ?? true) }
+    read()
+    const off = form.subscribe(read)
+    return () => {
+      // subscribe 的返回形态随内核版本有过函数/对象两种，都兜住。
+      if (typeof off === 'function') (off as () => void)()
+    }
+  }, [form])
+
+  return createElement('div', {
+    style: {
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+      padding: '12px 0', borderTop: '1px solid var(--dsw-alias-border-l2, #1e2836)',
+    },
+  },
+  createElement('div', { style: { minWidth: 0 } },
+    createElement('div', { style: { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary, #d8e0ea)' } }, '日记'),
+    createElement('div', { style: { fontSize: 11.5, color: 'var(--dsw-alias-label-secondary, #67748a)', marginTop: 3, lineHeight: 1.5 } },
+      '本机写日记。关掉后日记工具拒绝执行、不再注入指针；已有日记文件原样保留，不会被删。'),
+  ),
+  createElement('button', {
+    type: 'button',
+    role: 'switch',
+    'aria-checked': enabled,
+    'aria-label': '日记开关',
+    onClick: () => {
+      // 写入失败必须可见：先前直接 `void form.mutate(...)`，失败被静默吞掉，
+      // 界面上表现为「点了没反应」——那是比报错更坏的状态。
+      try {
+        const pending = form.mutate([{ op: 'set', path: ['diary', 'enabled'], value: !enabled }])
+        void Promise.resolve(pending).catch((error: unknown) => {
+          console.warn('dsh-memory: 日记开关写入失败', error)
+        })
+      } catch (error) {
+        console.warn('dsh-memory: 日记开关写入抛错', error)
+      }
+    },
+    style: {
+      flex: 'none', width: 40, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer',
+      position: 'relative', transition: 'background 120ms',
+      background: enabled ? 'var(--dsw-alias-state-business-primary, #4FC3F7)' : 'var(--dsw-alias-border-l2, #1e2836)',
+    },
+  },
+  createElement('span', {
+    style: {
+      position: 'absolute', top: 3, left: enabled ? 21 : 3, width: 16, height: 16, borderRadius: '50%',
+      background: '#fff', transition: 'left 120ms',
+    },
+  })))
+}
+
 // ---- client plugin body ----
 export function apply(ctx: unknown): void {
   const face = ctx as LocaleAwareContext
@@ -1040,6 +1115,29 @@ export function apply(ctx: unknown): void {
     })))
     // 设置导航图标：大脑（DSH 无 icon 契约，MutationObserver + CSS mask 替换齿轮）
     face.effect?.(() => registerSettingsNavIcon(() => STRINGS[localeId].tabMemory), 'dsh-memory: settings navigation icon')
+  }
+
+  // 插件页「记忆」详情里的配置卡片（0.19.0）：日记开关。
+  // key 用**包名**——`plugins.bundle.config` 的 key 是包名（`config-ledger.ts` 的
+  // `keysOf` 直接取 `entry.options.key`），而 `configForms.get` 的参数是 entry id
+  // （`memory`）。两者不是同一个东西，别写混。
+  //
+  // **必须走 `ctx.get('configForms')` 而不是 `ctx.configForms`**：后者是 cordis 的
+  // topology-sensitive 属性代理，本插件没有 inject 声明 `configForms`，属性访问会抛
+  // ——2026-10-24 实测，一个卡片注册失败会让整个 client 半侧 `failed`，连记忆面板一起没了。
+  // 卡片是锦上添花，任何情况下都不该拖垮插件本身，所以整段再包一层 try。
+  try {
+    const configForms = face.get?.('configForms') as { get?(ns: string): unknown } | undefined
+    const settingsForm = configForms?.get?.('memory') as ConfigFormLike | undefined
+    if (slots?.inject !== undefined && settingsForm !== undefined) {
+      slots.inject('plugins.bundle.config', () => slots.register({
+        name: 'plugins.bundle.config',
+        key: '@max-null/dsh-memory',
+        inject: () => ({}),
+      }, () => createElement(DiarySettingsCard, { form: settingsForm })))
+    }
+  } catch (error) {
+    console.warn('dsh-memory: 日记配置卡片未注册（不影响记忆与日记工具）', error)
   }
 
   // better-sidebar 可选软依赖：有侧栏时挂 tab（无则设置页兜底）。
