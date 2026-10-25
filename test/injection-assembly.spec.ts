@@ -30,7 +30,7 @@ async function setup(extra: { injectionBudget?: number } = {}) {
   ctx.provide('webServer' as never, { register: () => () => {} } as never)
   ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
   const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-assembly-'))
-  await ctx.plugin(plugin, { globalRoot, ...extra })
+  await ctx.plugin(plugin, { globalRoot, backup: { enabled: false }, ...extra })
   return { ctx }
 }
 

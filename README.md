@@ -106,26 +106,29 @@ DSH 存储层的写入是「读—改—写全量覆盖」，且官方两个后�
 
 **未覆盖**：`workspace.json`（工作区登记）由 DSH 自己的 workspace 服务写，插件层够不着，仍会被双实例互相覆盖；根因处置在上游——[discussion #6882](https://github.com/deepseek-ai/deepseek-harness/discussions/6882)。当前防线是轮转快照备份（SSiD 侧 `shell/scripts/backup-storages.mjs` + 计划任务）。
 
-## 定时备份（2026-10-18）
+## 定时备份（2026-10-18；日记归档 2026-10-25）
 
 **动机**：2026-10-18 的事故——`.dsh` 下的 storages 被外部整目录删除后，本插件的写入路径（读—改—写全量覆盖）在空磁盘上把内存里的 global 记忆覆盖成一条；而当时 `memory.json` **没有任何一份存在于 `.dsh` 之外**，无从恢复。
 
-**机制**：插件启动后每小时（可配）把记忆文件**只读复制**到 `<home>/.dsh-backups/memory/<YYYYMMDD-HHmmss>/`，并写一份 `manifest.json` 记录来源与文件清单。**插件关闭（dispose）时再补一次**——定时器只在运行期间生效，关 DSH 前最后一段变更靠这一次兜住。保留最近 14 份（可配），超期自动清理。
+**机制**：插件启动后每小时（可配）把记忆文件**只读复制**到 `<home>/.dsh-backups/memory/<YYYYMMDD-HHmmss>/`，并写一份 `manifest.json` 记录来源与文件清单。**插件关闭（dispose）时再补一次**——定时器只在运行期间生效，关 DSH 前最后一段变更靠这一次兜住。保留最近 14 份（可配，**只作用于记忆快照**），超期自动清理。
 
-**无界面**：这是行为类功能，不新增按钮、面板或设置项——行为效果即上面那段：部署后 `~/.dsh-backups/memory/` 下每小时多一个目录，目录里是当次复制出的 `memory.json`、`memory_project_*.json` 与 `manifest.json`。
+**日记另走一条路**：`<DSH_HOME>/diary/*.md` 与记忆同一轮复制，但落在**固定目录** `~/.dsh-backups/memory/diary-archive/`，**只增不删**，不参与上面的轮转。两边的不对称是实的：记忆快照丢一份还有别的份（同一份数据的多个时间点副本），归档里每一篇都是日记的唯一副本，丢了没有任何地方能重建。日记那一侧改过就以日记为准覆盖（人可能在事后改过错字），归档里有而日记里已没有的篇目一律保留——那正是归档的全部价值。归档目录名不匹配轮转正则，因此不需要给清理逻辑开白名单。
+
+**无界面**：这是行为类功能，不新增按钮、面板或设置项——行为效果即上面那段：部署后 `~/.dsh-backups/memory/` 下每小时多一个目录，目录里是当次复制出的 `memory.json`、`memory_project_*.json` 与 `manifest.json`；`diary-archive/` 里则按天累积 `YYYY-MM-DD.md`。
 
 | 项 | 默认值 |
 |---|---|
-| 备份内容 | `memory.json`（global）+ `memory_project_*.json`（project） |
-| 目标目录 | `~/.dsh-backups/memory/<时间戳>/`（**在 `DSH_HOME` 之外**） |
+| 备份内容 | `memory.json`（global）+ `memory_project_*.json`（project）+ `<DSH_HOME>/diary/*.md` |
+| 目标目录 | 记忆：`~/.dsh-backups/memory/<时间戳>/`（**在 `DSH_HOME` 之外**）；日记：`~/.dsh-backups/memory/diary-archive/` |
 | 间隔 | 60 分钟（首次延迟 1 分钟）；**插件关闭时另补一次** |
-| 保留 | 最近 14 份 |
+| 保留 | 记忆：最近 14 份；日记：全部（只增不删） |
 | 失败行为 | 只写日志，不影响记忆读写与启动 |
 
 **边界**：
 
 - 只备份**当前工作区**的 project 文件（`<cwd>/.dsh/storages/`）；其它工作区的 project 记忆不在备份范围。
 - 只读文件、只复制——**绝不复用引擎的写入路径**。写路径会先 `reload()` 再合并，磁盘缺失时它会把内存覆盖掉，正是这次事故的成因；备份不能走同一条路。
+- 日记按**逐字节内容**判断是否已备份过，不按 mtime：复制与编辑都会动 mtime，内容才是事实。
 
 ## 使用流程（写入即生效，人为例外干预）
 

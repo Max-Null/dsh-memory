@@ -18,7 +18,7 @@ import { ANCHOR_KINDS } from './anchors.ts'
 import type { MemoryAnchor } from './anchors.ts'
 import { mountMemoryApi } from './routes.ts'
 import { SELF_DESCRIPTION } from './self.ts'
-import { appendEntry, lastWriteAt, pointerLine, readDay, recentDates } from './diary.ts'
+import { appendEntry, diaryDir, lastWriteAt, pointerLine, readDay, recentDates } from './diary.ts'
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
 
@@ -1084,6 +1084,8 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     const roots = {
       globalRoot: config?.globalRoot ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storages'),
       projectRoot: config?.projectRoot ?? join(process.cwd(), '.dsh', 'storages'),
+      // 日记在 `storages` 之外，得单独给根——漏了这一项就等于「备份记忆、不备份日记」。
+      diaryRoot: diaryDir(),
     }
     ctx.effect(() => {
       const first = setTimeout(() => {

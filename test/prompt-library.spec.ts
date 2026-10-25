@@ -21,7 +21,7 @@ async function setup(extra: MemoryConfig = {}) {
   const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-global-'))
   const promptRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-prompt-'))
   const workspaceA = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-a-'))
-  const fiber = await ctx.plugin(plugin, { globalRoot, promptGlobalRoot: promptRoot, ...extra })
+  const fiber = await ctx.plugin(plugin, { globalRoot, promptGlobalRoot: promptRoot, backup: { enabled: false }, ...extra })
   return { ctx, fiber, globalRoot, promptRoot, workspaceA }
 }
 

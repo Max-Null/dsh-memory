@@ -20,7 +20,7 @@ async function setup(extra: MemoryConfig = {}) {
   ctx.provide('webServer' as never, { register: () => () => {} } as never)
   ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
   const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-diary-'))
-  const fiber = await ctx.plugin(plugin, { globalRoot, ...extra })
+  const fiber = await ctx.plugin(plugin, { globalRoot, backup: { enabled: false }, ...extra })
   return { ctx, fiber }
 }
 

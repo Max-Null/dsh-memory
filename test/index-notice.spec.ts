@@ -77,7 +77,7 @@ describe('记忆索引行（①）', () => {
     ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
     const globalRoot = await mkdtemp(join(tmpdir(), 'dsh-memory-index-'))
     const workspace = await mkdtemp(join(tmpdir(), 'dsh-memory-index-ws-'))
-    const fiber = await ctx.plugin(plugin, { globalRoot })
+    const fiber = await ctx.plugin(plugin, { globalRoot, backup: { enabled: false } })
 
     await ctx.memory.remember(
       { content: '常驻的那条', keywords: ['常驻主题'], namespace: 'project', injected: true },

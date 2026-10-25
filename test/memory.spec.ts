@@ -24,7 +24,7 @@ async function setup(extra: MemoryConfig = {}) {
   // 0.3.4：project 记忆按工作区 cwd 路由——临时目录充当两个工作区
   const workspaceA = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-a-'))
   const workspaceB = await mkdtemp(join(tmpdir(), 'dsh-memory-ws-b-'))
-  const fiber = await ctx.plugin(plugin, { globalRoot, ...extra })
+  const fiber = await ctx.plugin(plugin, { globalRoot, backup: { enabled: false }, ...extra })
   return { ctx, fiber, globalRoot, workspaceA, workspaceB }
 }
 
