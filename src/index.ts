@@ -119,6 +119,8 @@ interface MemoryToolRecord {
   injected: boolean
   content: string
   keywords: string[]
+  /** 主题（0.20.0）：见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 …；缺省 = 未分类。 */
+  topic?: string
   createdAt: number
   updatedAt: number
   lastUsedAt?: number
@@ -181,6 +183,7 @@ const RECORD_SCHEMA = {
     injected: { type: 'boolean', required: true },
     content: { type: 'string', required: true },
     keywords: { type: 'array', required: true, items: { type: 'string' } },
+    topic: { type: 'string', description: '主题（0.20.0）：见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 …；缺省表示未分类。' },
     createdAt: { type: 'number', required: true },
     updatedAt: { type: 'number', required: true },
     lastUsedAt: { type: 'number' },
@@ -358,6 +361,7 @@ function recordValue(record: MemoryRecord): MemoryToolRecord {
     injected: record.injected,
     content: record.content,
     keywords: record.keywords,
+    ...record.topic === undefined ? {} : { topic: record.topic },
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     ...record.lastUsedAt === undefined ? {} : { lastUsedAt: record.lastUsedAt },
@@ -677,6 +681,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       content: { type: 'string', required: true, description: 'Plaintext memory content.' },
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Where it applies; defaults to global.' },
       keywords: { type: 'array', items: { type: 'string' }, description: 'Explicit searchable anchors for memory_search. Give several angles (synonyms, abbreviations, zh/en) or it will not be found later. 多角度关键词（同义词、缩写、中英），否则将来检索不到它。' },
+      topic: { type: 'string', description: 'What this memory is about, one short word: 见闻 (things noticed while wandering) / 约定 (standing agreement) / 坑 (a pitfall hit) / 偏好 (a preference) / 事实 / 判据. Orthogonal to namespace. 主题：见闻 / 约定 / 坑 / 偏好 / 事实 / 判据；与 namespace 正交，缺省表示未分类。' },
       injected: { type: 'boolean', description: 'Set true to make this memory resident in every turn\'s context, as a deliberate decision that no longer auto-expires. Reserve it for rules, standing agreements and judgement criteria — the kind that must apply even when nobody thinks to search for them. Facts, references and case notes stay search-only (omit it). 设为 true 让这条记忆每轮常驻上下文，且视为有意决定、不再被自动淘汰。只用于规则、长期约定与判据——那些「没人想起来搜也必须生效」的记忆；事实、参考与案例留作按需检索（省略即可）。' },
       anchor: {
         type: 'object',
@@ -699,6 +704,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         content: args.content,
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.keywords === undefined ? {} : { keywords: args.keywords },
+        ...args.topic === undefined ? {} : { topic: args.topic },
         ...args.injected === undefined ? {} : { injected: args.injected },
         // 参数已由 tool schema 校验，这里的窄化只为过类型
         ...args.anchor === undefined
@@ -723,6 +729,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
       status: { type: 'string', enum: ['suggested', 'approved'], description: 'Restrict to one review status. 限定审核状态（suggested=待审核 / approved=已审核）.' },
       injected: { type: 'boolean', description: 'Restrict by the persistent-injection switch. 按常驻注入开关过滤.' },
+      topic: { type: 'string', description: 'Restrict to one topic (见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 …). 按主题过滤（0.20.0）.' },
       after: { type: 'string', description: 'Only memories updated at/after this time: `YYYY-MM-DD`, or a relative form like `7d` / `30d`. 只返回此后更新过的记忆（`YYYY-MM-DD`，或相对形式 `7d` / `30d`）.' },
       before: { type: 'string', description: 'Only memories updated at/before this time (same forms as `after`). 只返回此前更新过的记忆（写法同 after）.' },
     },
@@ -738,6 +745,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.injected === undefined ? {} : { injected: args.injected },
+        ...args.topic === undefined ? {} : { topic: args.topic },
         ...after === undefined ? {} : { after },
         ...before === undefined ? {} : { before },
       }, execProjectCwd(exec)).then(records => records.map(recordValue))
@@ -753,6 +761,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       namespace: { type: 'string', enum: ['global', 'project'], description: 'Restrict to one namespace. 限定单个命名空间.' },
       status: { type: 'string', enum: ['suggested', 'approved'], description: 'Restrict to one review status. 限定审核状态.' },
       kind: { type: 'string', enum: ['fact', 'prompt'], description: 'Restrict by record kind — fact (memories, default) or prompt (templates; use prompt_search instead). 按记录类别过滤：fact=记忆（默认）/ prompt=模板（模板请用 prompt_search）.' },
+      topic: { type: 'string', description: 'Restrict to one topic (见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 …). 按主题过滤（0.20.0）.' },
       limit: { type: 'integer', default: DEFAULT_SEARCH_LIMIT, description: 'Maximum hits to return (default 20; 0 = no limit; negative falls back to 20). 最多返回条数（默认 20；0 = 不限；负数按 20）.' },
     },
     output: {
@@ -768,6 +777,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
         ...args.namespace === undefined ? {} : { namespace: args.namespace },
         ...args.status === undefined ? {} : { status: args.status },
         ...args.kind === undefined ? {} : { kind: args.kind },
+        ...args.topic === undefined ? {} : { topic: args.topic },
       }, execProjectCwd(exec)).then(hits => (limit === 0 ? hits : hits.slice(0, limit)).map(hitValue))
     },
     presentCall: args => present('Search memory', 'read', args.query),

@@ -109,6 +109,13 @@ export interface MemoryRecord {
   lastUsedAt?: number
   /** 记录类别（缺省 'fact'）。 */
   kind?: MemoryKind
+  /**
+   * 记忆主题（0.20.0）：见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 …
+   *
+   * 与 `kind` 正交：`kind` 分「记忆还是提示词模板」，`topic` 分「这条记忆讲什么」。
+   * 存自由字符串，方便「只翻我出去逛到的那些」这类切片。
+   */
+  topic?: string
   /** prompt 记录元数据（仅 kind==='prompt'）。 */
   meta?: PromptMetaIndex
   /**
@@ -122,6 +129,8 @@ export interface MemoryWrite {
   content: string
   namespace?: MemoryNamespace
   keywords?: string[]
+  /** 记忆主题（0.20.0）：见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 …；省略表示未分类。 */
+  topic?: string
   /** 写入来源（2026-09-15）；缺省 'agent'（主模型写入）。面板等人工路径传 'human'。 */
   source?: MemorySource
   /**
@@ -145,6 +154,8 @@ export interface MemoryFilter {
   quarantined?: boolean
   /** 记录类别过滤（0.6.0）；缺省不过滤（工具层显式传 kind='fact' 保持旧行为）。 */
   kind?: MemoryKind
+  /** 主题过滤（0.20.0）：只取这个 topic 的记录；缺省不过滤。 */
+  topic?: string
   /**
    * 更新时间下界 / 上界（0.12.0；epoch ms，含端点）。
    *
@@ -363,6 +374,8 @@ interface StoredBlock {
   vector?: number[]
   /** 记录类别（0.6.0 模板库；缺省 fact）。 */
   kind?: MemoryKind
+  /** 记忆主题（0.20.0）：见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 …；缺省 = 未分类。 */
+  topic?: string
   /** prompt 索引元数据（仅 kind==='prompt'）。 */
   meta?: PromptMetaIndex
 }
@@ -438,10 +451,11 @@ function toRecord(id: string, block: StoredBlock): MemoryRecord {
     ...block.stale === undefined ? {} : { stale: block.stale },
     ...block.staleReason === undefined ? {} : { staleReason: block.staleReason },
   }
-  // 0.6.0 模板库字段（缺省 fact；prompt 元数据透传）
+  // 0.6.0 模板库字段（缺省 fact；prompt 元数据透传）；0.20.0 起带主题
   return {
     ...base,
     ...block.kind === undefined ? {} : { kind: block.kind },
+    ...block.topic === undefined ? {} : { topic: block.topic },
     ...block.meta === undefined ? {} : { meta: block.meta },
   }
 }
@@ -1110,6 +1124,8 @@ export class MemoryEngine extends Service {
       ...input.injected === undefined ? {} : { injectedAuto: false },
       // 有效性锚点（可选）：值变了这条记忆会被标 stale，不再被当成仍然正确
       ...input.anchor === undefined ? {} : { anchor: input.anchor },
+      // 主题（0.20.0）：省略即未分类，与 `kind`（fact/prompt）正交
+      ...input.topic === undefined || input.topic.trim() === '' ? {} : { topic: input.topic.trim() },
       ...verdict.quarantined
         ? { quarantined: true, ...verdict.reason === undefined ? {} : { quarantineReason: verdict.reason } }
         : {},
@@ -1131,7 +1147,8 @@ export class MemoryEngine extends Service {
       // 0.12.0：按更新时间筛——与注入排序、注入行的日期标记同一个依据，不制造第二个「新」的定义
       && (filter?.after === undefined || record.updatedAt >= filter.after)
       && (filter?.before === undefined || record.updatedAt <= filter.before)
-      && (filter?.kind === undefined || (record.kind ?? 'fact') === filter.kind))
+      && (filter?.kind === undefined || (record.kind ?? 'fact') === filter.kind)
+      && (filter?.topic === undefined || record.topic === filter.topic))
   }
 
   /**

@@ -1404,4 +1404,41 @@ describe('dsh-memory plugin', () => {
     expect(after.unknown?.writes).toBe(1)
     expect(after.agent?.writes).toBe(2)
   })
+
+  it('0.20.0: topic 随记录持久化，list/search 可按主题切片', async () => {
+    const { ctx, fiber } = await setup()
+    expect(fiber).toBeDefined()
+
+    const seen = await ctx.memory.remember({
+      content: '在 B 站看到有人把 dsh 插件刷成鱼灾',
+      keywords: ['鱼灾', 'bilibili'],
+      topic: '见闻',
+    })
+    expect(seen.topic).toBe('见闻')
+
+    // 省略 topic = 未分类，不写空串
+    const plain = await ctx.memory.remember({ content: 'no topic here', keywords: ['plain'] })
+    expect(plain.topic).toBeUndefined()
+
+    // 空白串按「未分类」处理，不落一个看不见的空主题
+    const blank = await ctx.memory.remember({ content: 'blank topic', keywords: ['blank'], topic: '   ' })
+    expect(blank.topic).toBeUndefined()
+
+    await ctx.memory.remember({ content: '约定：升级思灵要跟插件', keywords: ['约定'], topic: '约定' })
+
+    const onlySeen = await ctx.memory.list({ topic: '见闻' })
+    expect(onlySeen).toHaveLength(1)
+    expect(onlySeen[0]?.content).toContain('鱼灾')
+
+    const all = await ctx.memory.list()
+    expect(all).toHaveLength(4)
+
+    // 检索侧同一条判据
+    const hits = await ctx.memory.search('鱼灾', { topic: '见闻' })
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits.every(hit => hit.record.topic === '见闻')).toBe(true)
+
+    // 主题不匹配时检索不到
+    expect(await ctx.memory.search('鱼灾', { topic: '约定' })).toHaveLength(0)
+  })
 })

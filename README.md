@@ -76,6 +76,18 @@ npm install @max-null/dsh-memory
 
 两个根都可用 config 覆盖（`globalRoot` / `projectRoot`）。`memory_list` / `memory_search` 不带 `namespace` 过滤时会同时查两层。旧版双重前缀文件名（`memory_project_memory_project_<hash>.json`）在打开时自动迁移为规范名。
 
+## 主题（topic，0.20.0）
+
+`namespace` 管「在哪生效」，`topic` 管「这条讲什么」，两者正交：
+
+| 字段 | 回答的问题 | 取值 |
+|---|---|---|
+| `namespace` | 换个项目还成立吗 | `global` / `project` |
+| `kind` | 是记忆还是提示词模板 | `fact` / `prompt` |
+| `topic` | 这条记忆讲什么 | 自由字符串：`见闻` / `约定` / `坑` / `偏好` / `事实` / `判据` … |
+
+`memory_save` 传 `topic` 落库，`memory_list` / `memory_search` 传 `topic` 切片。留空或省略即「未分类」。用它把「自己出去逛到的」（`见闻`）和「一起干活时记下的」分开翻，不必再往正文里手写前缀。
+
 ## 跨工作区可见性（0.10.0 / 0.11.0）
 
 project 记忆按**会话工作区**分文件存放，所以「工作区」就是可见性的边界。0.10.0 起补了三个方向——针对的是同一个盲区：**不知道存在**（检索是有意图的动作，搜不出自己不知道存在的东西）。

@@ -47,6 +47,14 @@ export const blockSchema = z.object({
   lastUsedAt: z.number().optional(),
   vector: z.array(z.number()).optional(),
   kind: z.enum(['fact', 'prompt']).optional(),
+  /**
+   * 记忆主题（0.20.0）：见闻 / 约定 / 坑 / 偏好 / 事实 / 判据 … 自由字符串。
+   *
+   * 与 `kind` 正交——`kind` 分「记忆还是提示词模板」（记录类别），`topic` 分「这条记忆讲什么」
+   * （内容主题）。用自由字符串而不是枚举：新增主题不该要求改 schema，而枚举一旦写死，
+   * 存量文件里出现未登记的值会被门三判成不合规、进而整块读不出来。
+   */
+  topic: z.string().optional(),
   meta: z.object({
     seq: z.number().optional(),
     name: z.string(),
