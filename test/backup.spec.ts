@@ -123,6 +123,10 @@ describe('memory backup', () => {
     // 合法 unit 头：引擎打开时会校验 name/version，裸 JSON 会被拒。
     writeFileSync(join(globalRoot, 'memory.json'), JSON.stringify({ unit: { name: 'memory', version: 1 }, global: null, tables: { blocks: {} } }))
     const targetRoot = join(base, 'backups')
+    // 一个与进程 cwd 无关的工作区：它的存在证明备份取的是「引擎打开过的工作区」，
+    // 而不是 `process.cwd()`（后者是插件仓库目录，那里没有任何 .dsh/storages）。
+    const workspace = join(base, 'a-workspace')
+    mkdirSync(workspace, { recursive: true })
 
     // 日记根由 `$DSH_HOME` 推出，且不像 `globalRoot` 那样有配置项能覆盖——把它指到临时目录，
     // 否则这条用例会去读真实的 `~/.dsh/diary`。
@@ -136,6 +140,8 @@ describe('memory backup', () => {
       ctx.provide('webServer' as never, { register: () => () => {} } as never)
       ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
       const fiber = await ctx.plugin(plugin, { globalRoot, backup: { targetRoot, intervalMinutes: 60 } })
+      // 写一条工作区记忆，让引擎把它记进「打开过的工作区」。
+      await ctx.memory.remember({ content: '工作区里的一条记忆', keywords: ['ws'], namespace: 'project' }, workspace)
       await fiber.dispose()
     } finally {
       if (previousHome === undefined) delete process.env.DSH_HOME
@@ -145,6 +151,10 @@ describe('memory backup', () => {
     const dirs = existsSync(targetRoot) ? readdirSync(targetRoot) : []
     expect(dirs).toHaveLength(1)
     expect(existsSync(join(targetRoot, dirs[0] ?? '', 'memory.json'))).toBe(true)
+    // 关闭时补的那一次必须带上工作区的 project 文件——这条断言锁的是 index.ts 里
+    // 「备份时现算 project 根」那段：退回 process.cwd() 的话这里会是 0 个。
+    const projectFiles = readdirSync(join(targetRoot, dirs[0] ?? '')).filter(name => name.startsWith('memory_project_'))
+    expect(projectFiles).toHaveLength(1)
   })
 })
 
