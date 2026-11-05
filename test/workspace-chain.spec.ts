@@ -46,6 +46,19 @@ async function tree(...segments: string[]): Promise<string> {
 }
 
 describe('工作区链（④-A）', () => {
+  it('引擎记下打开过的工作区，备份据此枚举存储根', async () => {
+    const { ctx } = await setup()
+    const opened = await tree('ws-opened')
+    const untouched = await tree('ws-untouched')
+
+    await ctx.memory.remember({ content: '打开过的工作区', keywords: ['opened'], namespace: 'project' }, opened)
+
+    // 定时备份没有会话 cwd 可问，只能靠这份枚举——它错了，备份就会继续对着某个
+    // 空目录报成功，而备份自己的用例全绿（那些是直接传根的，绕过了这一层）。
+    expect(ctx.memory.projectStorageRoots()).toContain(join(opened, '.dsh', 'storages'))
+    expect(ctx.memory.projectStorageRoots()).not.toContain(join(untouched, '.dsh', 'storages'))
+  })
+
   it('子工作区能检索到祖先工作区的记忆，并带 `..` 来源标记', async () => {
     const { ctx, fiber } = await setup()
     const parent = await tree()

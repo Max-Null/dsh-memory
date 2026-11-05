@@ -622,6 +622,22 @@ export class MemoryEngine extends Service {
   }
 
   /**
+   * 已经打开过的工作区 project 存储根（`<cwd>/.dsh/storages`），供备份遍历。
+   *
+   * 备份是定时任务、没有会话 cwd，所以「现在在哪个工作区」这个问题它答不出来。
+   * 此前它拿 `process.cwd()` 兜底，而那是**进程启动目录**（桌面壳里通常是 profile
+   * 目录），与真实工作区无关——2026-11-05 实测：292 条项目记忆从未进过快照，备份
+   * 一直对着一个空目录反复报成功。
+   *
+   * 打开过的表由会话 cwd 驱动，见过的工作区都留在 {@link projectTables} 里；这是
+   * 备份唯一可靠的工作区来源。返回空数组表示「这次运行还没打开过任何工作区」，
+   * 由调用方决定回退策略。
+   */
+  projectStorageRoots(): string[] {
+    return [...this.projectTables.keys()].map(cwd => this.projectRootFor(cwd))
+  }
+
+  /**
    * 按工作区 cwd 取 project 表（懒打开 + 缓存）。无 cwd（未选工作区）
    * 返回 undefined——调用方（工具/面板）按此跳过 project 部分。
    *

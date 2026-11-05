@@ -33,7 +33,7 @@ describe('memory backup', () => {
     writeFileSync(join(projectRoot, 'memory_project_x.json'), '{"b":2}')
     writeFileSync(join(globalRoot, 'unrelated.txt'), 'nope')
 
-    const run = runMemoryBackup({ globalRoot, projectRoot, targetRoot, keep: 3, now: new Date(2026, 9, 18, 0, 30, 0) })
+    const run = runMemoryBackup({ globalRoot, projectRoots: [projectRoot], targetRoot, keep: 3, now: new Date(2026, 9, 18, 0, 30, 0) })
 
     expect(run.dir).toBe(join(targetRoot, '20261018-003000'))
     expect([...run.files].sort()).toEqual(['memory.json', 'memory_project_x.json'])
@@ -41,9 +41,53 @@ describe('memory backup', () => {
     expect(existsSync(join(targetRoot, '20261018-003000', 'unrelated.txt'))).toBe(false)
   })
 
+  it('backs up project memory from every workspace it is given', () => {
+    const base = tempRoot()
+    const globalRoot = join(base, 'home', 'storages')
+    const work = join(base, 'WorkStation', '.dsh', 'storages')
+    const harness = join(base, 'deepseek-harness', '.dsh', 'storages')
+    const targetRoot = join(base, 'backups')
+    for (const root of [globalRoot, work, harness]) mkdirSync(root, { recursive: true })
+    writeFileSync(join(globalRoot, 'memory.json'), '{"g":1}')
+    writeFileSync(join(work, 'memory_project_aaa.json'), '{"w":1}')
+    writeFileSync(join(harness, 'memory_project_bbb.json'), '{"h":1}')
+
+    const run = runMemoryBackup({
+      globalRoot, projectRoots: [work, harness], targetRoot, keep: 3, now: new Date(2026, 10, 5, 19, 30, 0),
+    })
+
+    expect([...run.files].sort()).toEqual(['memory.json', 'memory_project_aaa.json', 'memory_project_bbb.json'])
+    // manifest 必须记全部来源根：文件名里的哈希反推不出工作区路径，事后核对只能靠它。
+    const manifest = JSON.parse(readFileSync(join(targetRoot, '20261105-193000', 'manifest.json'), 'utf8'))
+    expect(manifest.projectRoots).toEqual([work, harness])
+  })
+
+  it('keeps both copies when two workspaces produce the same file name', () => {
+    const base = tempRoot()
+    const globalRoot = join(base, 'g')
+    const first = join(base, 'one', '.dsh', 'storages')
+    const second = join(base, 'two', '.dsh', 'storages')
+    const targetRoot = join(base, 'b')
+    for (const root of [globalRoot, first, second]) mkdirSync(root, { recursive: true })
+    writeFileSync(join(globalRoot, 'memory.json'), '{}')
+    writeFileSync(join(first, 'memory_project_same.json'), '{"who":"one"}')
+    writeFileSync(join(second, 'memory_project_same.json'), '{"who":"two"}')
+    const logs: string[] = []
+
+    const run = runMemoryBackup({
+      globalRoot, projectRoots: [first, second], targetRoot, keep: 3, log: text => logs.push(text),
+    })
+
+    expect([...run.files].sort()).toEqual(['memory.json', 'memory_project_same-1.json', 'memory_project_same.json'])
+    const dir = run.dir ?? ''
+    expect(readFileSync(join(dir, 'memory_project_same.json'), 'utf8')).toBe('{"who":"one"}')
+    expect(readFileSync(join(dir, 'memory_project_same-1.json'), 'utf8')).toBe('{"who":"two"}')
+    expect(logs.some(text => text.includes('冲突'))).toBe(true)
+  })
+
   it('does not create a directory when there is nothing to back up', () => {
     const base = tempRoot()
-    const run = runMemoryBackup({ globalRoot: join(base, 'g'), projectRoot: join(base, 'p'), targetRoot: join(base, 'b'), keep: 3 })
+    const run = runMemoryBackup({ globalRoot: join(base, 'g'), projectRoots: [join(base, 'p')], targetRoot: join(base, 'b'), keep: 3 })
     expect(run.dir).toBeNull()
     expect(existsSync(join(base, 'b'))).toBe(false)
   })
@@ -55,7 +99,7 @@ describe('memory backup', () => {
     mkdirSync(globalRoot, { recursive: true })
     writeFileSync(join(globalRoot, 'memory.json'), '{}')
     for (const minute of [0, 1, 2, 3]) {
-      runMemoryBackup({ globalRoot, projectRoot: join(base, 'p'), targetRoot, keep: 2, now: new Date(2026, 9, 18, 0, minute, 0) })
+      runMemoryBackup({ globalRoot, projectRoots: [join(base, 'p')], targetRoot, keep: 2, now: new Date(2026, 9, 18, 0, minute, 0) })
     }
     expect(readdirSync(targetRoot).sort()).toEqual(['20261018-000200', '20261018-000300'])
   })
@@ -67,7 +111,7 @@ describe('memory backup', () => {
     writeFileSync(join(globalRoot, 'memory.json'), '{}')
     const blocker = join(base, 'blocked')
     writeFileSync(blocker, 'not a directory')
-    const run = runMemoryBackup({ globalRoot, projectRoot: join(base, 'p'), targetRoot: blocker, keep: 2 })
+    const run = runMemoryBackup({ globalRoot, projectRoots: [join(base, 'p')], targetRoot: blocker, keep: 2 })
     expect(run.dir).toBeNull()
     expect(run.error).toBeDefined()
   })
@@ -123,7 +167,7 @@ describe('diary archive', () => {
     writeFileSync(join(diaryRoot, '2026-10-25.md'), '# 2026-10-25\n')
     writeFileSync(join(diaryRoot, 'notes.txt'), '不是日记')
 
-    const run = runMemoryBackup({ globalRoot, projectRoot, diaryRoot, targetRoot, keep: 3, now: new Date(2026, 9, 25, 12, 0, 0) })
+    const run = runMemoryBackup({ globalRoot, projectRoots: [projectRoot], diaryRoot, targetRoot, keep: 3, now: new Date(2026, 9, 25, 12, 0, 0) })
 
     expect(run.diary).toEqual({ copied: 2, kept: 0 })
     expect(readdirSync(join(targetRoot, 'diary-archive')).sort()).toEqual(['2026-10-24.md', '2026-10-25.md'])
@@ -138,11 +182,11 @@ describe('diary archive', () => {
     writeFileSync(join(globalRoot, 'memory.json'), '{}')
     writeFileSync(join(diaryRoot, '2026-10-24.md'), '# 旧\n')
     writeFileSync(join(diaryRoot, '2026-10-25.md'), '# 不变\n')
-    runMemoryBackup({ globalRoot, projectRoot, diaryRoot, targetRoot, keep: 3, now: new Date(2026, 9, 25, 12, 0, 0) })
+    runMemoryBackup({ globalRoot, projectRoots: [projectRoot], diaryRoot, targetRoot, keep: 3, now: new Date(2026, 9, 25, 12, 0, 0) })
 
     // 人回去改了一篇的错字——日记那一侧才是当前的。
     writeFileSync(join(diaryRoot, '2026-10-24.md'), '# 改过\n')
-    const second = runMemoryBackup({ globalRoot, projectRoot, diaryRoot, targetRoot, keep: 3, now: new Date(2026, 9, 25, 13, 0, 0) })
+    const second = runMemoryBackup({ globalRoot, projectRoots: [projectRoot], diaryRoot, targetRoot, keep: 3, now: new Date(2026, 9, 25, 13, 0, 0) })
 
     expect(second.diary).toEqual({ copied: 1, kept: 1 })
     expect(readFileSync(join(targetRoot, 'diary-archive', '2026-10-24.md'), 'utf8')).toBe('# 改过\n')
@@ -158,7 +202,7 @@ describe('diary archive', () => {
     writeFileSync(orphan, '# 只剩归档里有\n')
 
     for (const minute of [0, 1, 2, 3]) {
-      runMemoryBackup({ globalRoot, projectRoot, diaryRoot, targetRoot, keep: 1, now: new Date(2026, 9, 25, 12, minute, 0) })
+      runMemoryBackup({ globalRoot, projectRoots: [projectRoot], diaryRoot, targetRoot, keep: 1, now: new Date(2026, 9, 25, 12, minute, 0) })
     }
 
     expect(existsSync(orphan)).toBe(true)
@@ -170,7 +214,7 @@ describe('diary archive', () => {
     const { projectRoot, diaryRoot, targetRoot } = layout()
     writeFileSync(join(diaryRoot, '2026-10-25.md'), '# 只有日记\n')
 
-    const run = runMemoryBackup({ globalRoot: join(targetRoot, 'none'), projectRoot, diaryRoot, targetRoot, keep: 2 })
+    const run = runMemoryBackup({ globalRoot: join(targetRoot, 'none'), projectRoots: [projectRoot], diaryRoot, targetRoot, keep: 2 })
 
     expect(run.dir).toBeNull()
     expect(run.diary).toEqual({ copied: 1, kept: 0 })
@@ -181,7 +225,7 @@ describe('diary archive', () => {
     const { globalRoot, projectRoot, diaryRoot, targetRoot } = layout()
     writeFileSync(join(globalRoot, 'memory.json'), '{}')
 
-    const run = runMemoryBackup({ globalRoot, projectRoot, diaryRoot, targetRoot, keep: 2 })
+    const run = runMemoryBackup({ globalRoot, projectRoots: [projectRoot], diaryRoot, targetRoot, keep: 2 })
 
     expect(run.diary).toEqual({ copied: 0, kept: 0 })
     expect(existsSync(join(targetRoot, 'diary-archive'))).toBe(false)
@@ -196,7 +240,7 @@ describe('diary archive', () => {
     const logs: string[] = []
 
     const run = runMemoryBackup({
-      globalRoot, projectRoot, diaryRoot: notADirectory, targetRoot, keep: 2, log: text => logs.push(text),
+      globalRoot, projectRoots: [projectRoot], diaryRoot: notADirectory, targetRoot, keep: 2, log: text => logs.push(text),
     })
 
     expect(run.diary).toEqual({ copied: 0, kept: 0 })

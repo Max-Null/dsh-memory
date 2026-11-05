@@ -1091,25 +1091,45 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     const targetRoot = backup?.targetRoot ?? join(homedir(), '.dsh-backups', 'memory')
     const intervalMs = Math.max(1, backup?.intervalMinutes ?? 60) * 60_000
     const keep = Math.max(1, backup?.keep ?? 14)
-    const roots = {
-      globalRoot: config?.globalRoot ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storages'),
-      projectRoot: config?.projectRoot ?? join(process.cwd(), '.dsh', 'storages'),
-      // 日记在 `storages` 之外，得单独给根——漏了这一项就等于「备份记忆、不备份日记」。
-      diaryRoot: diaryDir(),
+    const globalRoot = config?.globalRoot ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storages')
+    /**
+     * 本次要备份的 project 根。
+     *
+     * **每次备份时现算**，不能像 `globalRoot` 那样在启动时定死：工作区是随会话逐步
+     * 打开的，启动那一刻引擎里一个都没有，那时算出来永远是空的。
+     *
+     * 三档来源：引擎打开过的工作区（由会话 cwd 驱动，最可靠）、显式配置的
+     * `projectRoot`、两者都空时回退 `process.cwd()`。中间那一档要注意：`MemoryConfig`
+     * 把它注释成「project 记忆的根」，但**引擎实现从不读它**——它只在这里影响备份。
+     * 最后一档只是兜底——它是进程启动目录而非工作区，桌面壳里通常指向 profile
+     * 目录，那正是「项目记忆零快照」的成因（2026-11-05 实测：738 KB / 292 条从未
+     * 进过快照，备份一直对着空目录报成功）。
+     */
+    const projectRoots = (): string[] => {
+      const found = new Set<string>(memory.projectStorageRoots())
+      if (config?.projectRoot !== undefined) found.add(config.projectRoot)
+      if (found.size === 0) found.add(join(process.cwd(), '.dsh', 'storages'))
+      return [...found]
+    }
+    const backupOnce = (): void => {
+      runMemoryBackup({
+        globalRoot,
+        projectRoots: projectRoots(),
+        // 日记在 `storages` 之外，得单独给根——漏了这一项就等于「备份记忆、不备份日记」。
+        diaryRoot: diaryDir(),
+        targetRoot,
+        keep,
+      })
     }
     ctx.effect(() => {
-      const first = setTimeout(() => {
-        runMemoryBackup({ ...roots, targetRoot, keep })
-      }, 60_000)
-      const timer = setInterval(() => {
-        runMemoryBackup({ ...roots, targetRoot, keep })
-      }, intervalMs)
+      const first = setTimeout(backupOnce, 60_000)
+      const timer = setInterval(backupOnce, intervalMs)
       timer.unref()
       return () => {
         clearTimeout(first)
         clearInterval(timer)
         // 关闭时补一次：定时器只在运行期间生效，关 DSH 前最后一段变更靠这里兜住。
-        runMemoryBackup({ ...roots, targetRoot, keep })
+        backupOnce()
       }
     })
   }

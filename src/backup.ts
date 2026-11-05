@@ -36,8 +36,14 @@ export interface MemoryBackupConfig {
 export interface MemoryBackupOptions {
   /** global 记忆的根（`$DSH_HOME/storages`）。 */
   globalRoot: string
-  /** project 记忆的根（`<cwd>/.dsh/storages`）。 */
-  projectRoot: string
+  /**
+   * project 记忆的根，一个工作区一项（`<cwd>/.dsh/storages`）。
+   *
+   * 是数组而非单值：项目记忆**按工作区分散**，一次运行里通常会打开好几个
+   * （本机实测同时存在 WorkStation / deepseek-harness / seek-soul-in-darkness
+   * 三份各自独立）。只备份一个等于默认放弃其余工作区的历史。
+   */
+  projectRoots: readonly string[]
   /** 日记的根（`$DSH_HOME/diary`）；缺省不备份日记。 */
   diaryRoot?: string
   /** 备份根目录。 */
@@ -190,7 +196,9 @@ export function runMemoryBackup(options: MemoryBackupOptions): MemoryBackupRun {
     ? undefined
     : archiveDiary(options.diaryRoot, options.targetRoot, log)
   const globalFiles = candidateFiles(options.globalRoot, log).map(name => ({ name, from: join(options.globalRoot, name) }))
-  const projectFiles = candidateFiles(options.projectRoot, log).map(name => ({ name, from: join(options.projectRoot, name) }))
+  const projectFiles = options.projectRoots.flatMap(
+    root => candidateFiles(root, log).map(name => ({ name, from: join(root, name) })),
+  )
   const sources = [...globalFiles, ...projectFiles]
   if (sources.length === 0) {
     log('memory backup: 没有可备份的记忆文件')
@@ -212,10 +220,22 @@ export function runMemoryBackup(options: MemoryBackupOptions): MemoryBackupRun {
   }
 
   const files: string[] = []
+  // 多个工作区可能给出同名文件（backend 名由 cwd 哈希得出，不同工作区几乎不会撞，
+  // 但不该把「备份的完整性」押在哈希碰撞概率上）。撞了就加递增后缀，绝不覆盖——
+  // 一次备份里静默少一份，等于这次备份没有做过。
+  const used = new Set<string>()
   for (const source of sources) {
     try {
-      copyFileSync(source.from, join(dir, source.name))
-      files.push(source.name)
+      let name = source.name
+      for (let suffix = 1; used.has(name); suffix += 1) {
+        name = source.name.replace(/\.json$/u, `-${String(suffix)}.json`)
+      }
+      copyFileSync(source.from, join(dir, name))
+      used.add(name)
+      files.push(name)
+      if (name !== source.name) {
+        log(`memory backup: ${source.from} 与本次快照里的同名文件冲突，落位为 ${name}`)
+      }
     } catch (error: unknown) {
       log(`memory backup: 复制 ${source.name} 失败: ${reason(error)}`)
     }
@@ -225,7 +245,9 @@ export function runMemoryBackup(options: MemoryBackupOptions): MemoryBackupRun {
     writeFileSync(join(dir, 'manifest.json'), `${JSON.stringify({
       createdAt: now.toISOString(),
       globalRoot: options.globalRoot,
-      projectRoot: options.projectRoot,
+      // 记全部来源根：事后要判断「某个工作区的记忆到底有没有被备份到」，
+      // 只能靠这份清单——文件名里的哈希反推不出工作区路径。
+      projectRoots: [...options.projectRoots],
       files,
       // 日记不在本次快照目录里，manifest 只记「这一轮归档做了什么」，不列篇名。
       ...(diary === undefined ? {} : { diary: { root: options.diaryRoot, ...diary } }),
