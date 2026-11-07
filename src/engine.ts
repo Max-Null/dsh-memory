@@ -538,6 +538,14 @@ export class MemoryEngine extends Service {
   private globalTable?: KvTable<string, StoredBlock>
 /** project 域按工作区 cwd 懒打开 + 缓存（多会话并发各工作区独立）。 */
   private projectTables = new Map<string, KvTable<string, StoredBlock>>()
+  /**
+   * 各 storage backend 的清理函数（摘名 + 关闭）。
+   *
+   * 不挂在独立 effect 上：cordis 的 dispose 后进先出，运行时才注册的那些会比
+   * `memory.domainsClose` 早执行，导致 domain 还握着 unit 时 backend 先关。
+   * 统一由 {@link closeBackends} 在 domain 全部关闭之后按插入顺序执行。
+   */
+  private readonly backendClosers: Array<() => Promise<void>> = []
   /** 子项目发现缓存（④-B 2026-09-19）：key = 工作区路径；值 = 其直接子目录中带记忆的（按条数降序）。 */
   private readonly neighborCache = new Map<string, Array<{ name: string, count: number }>>()
   /** 进行中的子项目发现（key → promise）：预热是 fire-and-forget，之后的显式调用与它合流而非重复扫描。 */
@@ -580,15 +588,54 @@ export class MemoryEngine extends Service {
   }
 
   protected async [Service.init](): Promise<void> {
-    // backend 只注册一次：registry 对重名注册抛 duplicate-backend
-    // （storage/tests/registry.spec 实测），reload 不得重复注册。
+    // backend 注册是**一个 effect**：`dsh-storage` 的 `BackendRegistry.register()` 契约是
+    // 「registration is an effect: the returned disposer removes the name」。丢掉那个 disposer
+    // 会让名字活过 fiber——issue #3 的真实成因：插件市场的更新流程会在同一进程里重新组合
+    // profile 并做一次构建校验，本 entry 第二次激活时 `register('memory-global', …)` 撞上
+    // 自己上次留下的名字，报 `duplicate-backend`；而那句报错被上层包装成「更新前的构建
+    // 未能验证恢复，请检查该 profile」，把用户引向「配置坏了」这个错误方向。
+    //
+    // **摘名与关闭不能各挂一个 effect**：cordis 的 dispose 后进先出，而 project backend 的
+    // effect 是运行时（`openProjectTable`）才注册的，会比这里晚注册、早执行——于是 domain
+    // 还握着 unit 时 backend 先被关掉，留下没释放的 open-slot，下一个实例打开同一目录
+    // 就失败（表现为「表打开了但一条都读不到」）。所以统一收进一个 closers 列表，
+    // 由本 effect 在**所有 domain 关闭之后**依次执行。
+    //
+    // reload 不重新注册 backend（见 `reload()`：它只重开 domain），所以这样改不改变
+    // reload 的语义——这些 closers 只在 dispose 时触发。
     const globalBackend = new JsonStorageBackend(this.config.globalRoot ?? globalRoot())
-    this.ctx.storage.backend.register('memory-global', globalBackend)
+    this.backendClosers.push(this.registerBackend('memory-global', globalBackend))
     await this.openGlobalFacility()
-    this.ctx.effect(() => () => {
-      void this.facility?.closeAll()
-      for (const facility of this.projectFacilities.values()) void facility.closeAll()
+    this.ctx.effect(() => async () => {
+      await this.facility?.closeAll()
+      for (const facility of this.projectFacilities.values()) await facility.closeAll()
+      await this.closeBackends()
     }, 'memory.domainsClose')
+  }
+
+  /**
+   * 注册一个 storage backend 并返回它的清理函数（摘名 + 关闭）。
+   *
+   * 清理函数**不立刻挂到 effect 上**，而是交给 {@link closeBackends} 在 domain 全部关闭
+   * 之后统一执行——理由见 `[Service.init]` 的注释。
+   */
+  private registerBackend(name: string, backend: JsonStorageBackend): () => Promise<void> {
+    const unregister = this.ctx.storage.backend.register(name, backend)
+    return async () => {
+      unregister()
+      await backend.close()
+    }
+  }
+
+  /** 依次摘名并关闭所有已注册的 backend；必须由外部保证 domain 已先关闭。 */
+  private async closeBackends(): Promise<void> {
+    for (const close of this.backendClosers.splice(0)) {
+      try {
+        await close()
+      } catch {
+        // 清理失败不该让 dispose 整体失败——名字可能已被别处摘掉。
+      }
+    }
   }
 
   /** 打开全局存储域（init 与 reload 共用；backend 复用已注册实例）。 */
@@ -699,7 +746,10 @@ export class MemoryEngine extends Service {
     }
     if (!this.registeredProjectBackends.has(backendName)) {
       const backend = new JsonStorageBackend(root)
-      this.ctx.storage.backend.register(backendName, backend)
+      // 与 `memory-global` 同样走 closers 列表：`registeredProjectBackends` 只能防**同一
+      // 实例**内的重复注册，换一个实例这个 Set 就是空的，挡不住上一个 fiber 残留的名字
+      // （issue #3 里这一点被 `memory-global` 先撞上，所以看不出来）。
+      this.backendClosers.push(this.registerBackend(backendName, backend))
       this.registeredProjectBackends.add(backendName)
     }
     const facility = new DomainFacility(this.ctx, { backend: backendName, routes: {} })

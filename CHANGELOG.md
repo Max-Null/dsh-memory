@@ -8,6 +8,14 @@
 
 ### 修正
 
+**storage backend 的名字活过 fiber，导致装本插件后无法更新任何插件（issue #3）。**
+
+`MemoryEngine[Service.init]` 与 `openProjectTable()` 都丢弃了 `ctx.storage.backend.register()` 返回的 disposer——而 `dsh-storage` 的契约是「注册是一个 effect，返回的 disposer 负责摘掉这个名字」。名字于是活过 fiber：插件市场的更新流程会在同一进程里重新组合 profile 并做一次构建校验，本 entry 第二次激活时撞上自己上次留下的名字，报 `duplicate-backend`；上层把那句包装成「更新前的构建未能验证恢复，请检查该 profile」，把用户引向错误方向（实测配置与数据都完好）。
+
+修复时还发现一处 issue 未覆盖的细节：**摘名与关闭不能各挂一个 effect**。cordis 的 dispose 后进先出，而 project backend 的 effect 是运行时才注册的，会比 `memory.domainsClose` 晚注册、早执行——于是 domain 还握着 unit 时 backend 先被关，留下未释放的 open-slot，下一个实例打开同一目录表现为「表能打开但一条都读不到」。改为统一的 closers 列表，在所有 domain 关闭之后依次执行。
+
+新增 `test/backend-lifecycle.spec.ts` 两条用例锁**行为**而不是实现：dispose 后重新挂载不抛 duplicate-backend；重新挂载后仍能读到先前写入的工作区记忆。修复前两条都红。
+
 **定时备份一直只对着一个空目录干活。** 备份用它自己的 `process.cwd()` 推 project 根，而那是**进程启动目录**（桌面壳里通常是 profile 目录），与真实工作区无关——2026-11-05 实测：292 条 / 738 KB 项目记忆**从未进过快照**，每小时那一轮都在对着一个不存在的目录反复报成功。README 原先把它写成「只备份当前工作区」，但那个「当前工作区」本身就算错了。
 
 - 来源改为「引擎已经打开过的工作区」（由会话 cwd 驱动，打开过的表留在引擎里），且**每轮备份时现算**——工作区是随会话逐步打开的，启动那一刻一个都没有，定死在启动时算出来永远是空的。
