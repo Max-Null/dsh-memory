@@ -6,7 +6,7 @@
  */
 
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
@@ -81,6 +81,22 @@ export const Config = z.object({
  * @param config - 插件配置。
  * @returns 是否启用日记。
  */
+/**
+ * 定时备份的默认根：`DSH_HOME` 的**兄弟目录** `.dsh-backups/memory`。
+ *
+ * 为什么是兄弟目录而不是直接 `homedir()`：隔离实例（不同 `DSH_HOME` 并行跑，比如 dev
+ * 与装版）本该各有自己的备份树。写死 `homedir()` 会让它们的快照混进同一份目录——
+ * 2026-11-07 实测：dev 实例把 `globalRoot` 指向 `home-100` 的快照写进了装版的备份根，
+ * 两份 manifest 混在一起，人工恢复时容易拿错。
+ *
+ * 兄弟目录同时保证它**在 `DSH_HOME` 之外**——2026-10-18 那次事故是整个 `.dsh` 被删，
+ * 备份必须活在外面，所以不能退化成 `$DSH_HOME/backups`。
+ */
+function defaultBackupRoot(): string {
+  const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(dirname(dshHome), '.dsh-backups', 'memory')
+}
+
 function diaryOn(config: MemoryConfig | undefined): boolean {
   const raw = (config as { diary?: unknown } | undefined)?.diary
   if (raw === undefined || raw === null) return true
@@ -1088,7 +1104,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   // 首次延迟 1 分钟避开启动高峰；此后按 `backup.intervalMinutes` 重复；`unref` 不挡进程退出。
   const backup = config?.backup
   if (backup?.enabled !== false) {
-    const targetRoot = backup?.targetRoot ?? join(homedir(), '.dsh-backups', 'memory')
+    const targetRoot = backup?.targetRoot ?? defaultBackupRoot()
     const intervalMs = Math.max(1, backup?.intervalMinutes ?? 60) * 60_000
     const keep = Math.max(1, backup?.keep ?? 14)
     const globalRoot = config?.globalRoot ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storages')

@@ -156,6 +156,38 @@ describe('memory backup', () => {
     const projectFiles = readdirSync(join(targetRoot, dirs[0] ?? '')).filter(name => name.startsWith('memory_project_'))
     expect(projectFiles).toHaveLength(1)
   })
+
+  it('默认备份根落在 DSH_HOME 的兄弟目录，隔离实例不互相污染', async () => {
+    const base = tempRoot()
+    const globalRoot = join(base, 'global')
+    mkdirSync(globalRoot, { recursive: true })
+    writeFileSync(join(globalRoot, 'memory.json'), JSON.stringify({ unit: { name: 'memory', version: 1 }, global: null, tables: { blocks: {} } }))
+    // 本用例**不传** targetRoot，走默认值。用一个临时 DSH_HOME 是为了同时验两件事：
+    // 默认根跟着它走（隔离），且它落在 DSH_HOME 之外（2026-10-18 事故的教训）。
+    const dshHome = join(base, 'isolated-home')
+
+    const previousHome = process.env.DSH_HOME
+    process.env.DSH_HOME = dshHome
+    try {
+      const ctx = new Context()
+      await ctx.plugin(Storage)
+      await ctx.plugin(SystemPrompt)
+      await ctx.plugin(ToolRegistry)
+      ctx.provide('webServer' as never, { register: () => () => {} } as never)
+      ctx.provide('webStartup' as never, { trustedHosts: [] } as never)
+      const fiber = await ctx.plugin(plugin, { globalRoot, backup: { intervalMinutes: 60 } })
+      await fiber.dispose()
+    } finally {
+      if (previousHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previousHome
+    }
+
+    const expected = join(base, '.dsh-backups', 'memory')
+    const dirs = existsSync(expected) ? readdirSync(expected) : []
+    expect(dirs).toHaveLength(1)
+    // 且没有原样写进 DSH_HOME 内部——那会让「整个 .dsh 被删」时连备份一起没。
+    expect(existsSync(join(dshHome, '.dsh-backups'))).toBe(false)
+  })
 })
 
 describe('diary archive', () => {

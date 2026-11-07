@@ -4,6 +4,18 @@
 
 > **关于 git tag**：0.7.1 / 0.7.2 / 0.7.3 / 0.8.0 / 0.9.0 / 0.9.1 六个版本**没有对应的 git tag**。它们的改动在仓库里是一次性提交的（`42b08ab`「feat(memory): 0.7.1–0.9.2 累积改动」，21 文件 / 1482 行），git 历史中不存在这些版本各自的代码状态——给它们各打一个 tag 只能全部指向同一个 commit，那是假精确，所以不补。这六个版本在 npm 上都有记录（`npm view @max-null/dsh-memory versions`）；GitHub 的 Release 列表会跳过它们，缺口即由此而来。
 
+## [Unreleased]
+
+### 修正
+
+**隔离实例的备份会混进同一份目录——默认备份根不看 `DSH_HOME`。**
+
+`backup.targetRoot` 的缺省值是 `join(homedir(), '.dsh-backups', 'memory')`，与 `DSH_HOME` 无关。于是不同 `DSH_HOME` 的两个实例（装版与 dev 并行）把快照写进同一个目录——2026-11-07 实测：dev 实例产出的快照把 `globalRoot` 指向 `home-100` 的 `memory.json` 写进了装版的备份树，两份 manifest 混在一起，人工恢复时容易拿错。
+
+默认值改为 `dirname(DSH_HOME)/.dsh-backups/memory`：缺省 `DSH_HOME` 下位置不变（仍是 `~/.dsh-backups/memory`），隔离实例各归各的；并且仍在 `DSH_HOME` **之外**——2026-10-18 那次事故是整个 `.dsh` 被删，备份不能退化成 `$DSH_HOME/backups`。
+
+新增一条用例：临时 `DSH_HOME` 且不传 `targetRoot`，断言快照落在兄弟目录、且没有写进 `DSH_HOME` 内部。该用例做过负向控制（把默认根改成写进 `DSH_HOME` 时立刻失败）。
+
 ## [0.21.0] - 2026-11-07
 
 ### 修正
