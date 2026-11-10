@@ -144,6 +144,50 @@ DSH 存储层的写入是「读—改—写全量覆盖」，且官方两个后�
 - 只读文件、只复制——**绝不复用引擎的写入路径**。写路径会先 `reload()` 再合并，磁盘缺失时它会把内存覆盖掉，正是这次事故的成因；备份不能走同一条路。
 - 日记按**逐字节内容**判断是否已备份过，不按 mtime：复制与编辑都会动 mtime，内容才是事实。
 
+## 云同步（2026-11-11）
+
+把本机记忆镜像到一个 git 仓库，多个环境之间共享同一份记忆。
+
+**为什么是「一条记忆一个文件」。** 整份 `memory.json` 放进 git 会撞：2026-11-06 实测，两端各新增一条记忆后 merge，`git` 报 `CONFLICT (content)`——两条记录挤在同一个插入点，按「取一边」解决会**静默丢掉另一端那条**，而 git 仍报「合并成功」。改成一条一个文件后同一场景是 `Merge made by the 'ort' strategy`，0 冲突。
+
+**项目身份用项目名，不用路径。** 本机 `H:\MaxNull\WorkStation` 与另一台机器 `D:\WorkStation` 是同一个项目——目录名（统一小写）决定它在 `records/project/` 下落到哪。用绝对路径哈希的话，换个盘符就成了另一个项目，记忆会静默分裂成两份互不相认的。
+
+```yaml
+memory:
+  sync:
+    mirrorDir: ''                    # 缺省 <DSH_HOME>/memory-sync
+    remote: ''                       # https 远端；缺省只做本地提交
+    branch: main
+    envName: ''                      # 本环境短名，冲突留证时用作后缀
+```
+
+token **不写进配置**：从环境变量 `DSH_MEMORY_SYNC_TOKEN` 或既有凭据机制取。
+
+| 工具 | 作用 |
+|---|---|
+| `memory_sync` | `status` 只看状态 / `pull` 拉取并导入 / `push` 镜像并推送 |
+| `memory_conflicts` | 列出**未被自动裁决**的冲突 |
+
+**仓库形态**：
+
+```
+<mirrorDir>/
+  records/global/<uuid>.json            一条记忆一个文件
+  records/project/<项目名>/<uuid>.json
+  tombstones/<uuid>.json                forget 留下的痕迹（不删记录文件）
+  conflicts/<uuid>.<env>.json           两边都改过时，两个版本都留着
+```
+
+**边界**：
+
+- **冲突不自动裁决。** 同一条被两个环境同时修改时，两个版本都写进 `conflicts/`，本地版本保留并标记待处理。记忆是长期资产，被静默覆盖的那份就没了。代价是冲突会堆到有人处理为止。
+- **删除留墓碑，不删文件。** `memory_forget` 是**真删**（`table.delete`），而另一端的「刚加、我还没拉到」在本地看起来完全一样。靠「上次同步的 id 快照」（`.sync-state.json`）区分：曾同步过、现在没了才是删除。**首次同步永远不产生墓碑**——那时没有「曾经有过」这个信息。
+- **本地瞬态字段不进镜像**：`hitCount` / `lastUsedAt` 每次检索命中都会改，带上它们会让仓库在内容毫无变化时持续变脏。隔离记录（`quarantined`）**整条不导出**——隔离区的存在理由就是它可能含凭据类内容。
+- **首次同步必须 clone**。本地 `git init` 出来的仓库与远端没有共同祖先，push 会被拒（`not a simple fast-forward`）。这条是 2026-11-11 第一次连真仓库时撞出来的。
+- 传输层用 `isomorphic-git`（纯 JS，走 HTTPS + PAT），**不依赖系统 git**——移动端装的东西会被运行时更新清掉，不该把同步链的地基押在上面。
+
+**没有调度器。** 目前靠模型显式调用 `memory_sync`；`autoPull` / `autoPush` 尚未实现。
+
 ## 使用流程（写入即生效，人为例外干预）
 
 提示词模板库（0.6.0）：`prompt_search / prompt_get / prompt_list / prompt_add` 四个工具管理**模板库**——
