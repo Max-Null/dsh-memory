@@ -22,7 +22,7 @@ import { planImport } from './sync-import.ts'
 import type { ImportConflict, ImportedBlock, IncomingRecord } from './sync-import.ts'
 import { SYNC_STATE_FILE, TOMBSTONE_DIR, dropTombstoned, planTombstones } from './sync-tombstone.ts'
 import type { SyncState, Tombstone } from './sync-tombstone.ts'
-import { ensureRemote, pullMirror, pushMirror } from './sync-remote.ts'
+import { ensureMirrorRepo, ensureRemote, pullMirror, pushMirror } from './sync-remote.ts'
 import { writeMirror } from './sync-writer.ts'
 
 /** 同步配置。 */
@@ -35,6 +35,11 @@ export interface SyncConfig {
   readonly branch?: string
   /** 环境短名，用于冲突留证与提交信息；缺省「本机」。 */
   readonly envName?: string
+  /**
+   * HTTPS token。**不从配置里读**——由调用方从环境变量或凭据机制取出后传入，
+   * 避免它落进 profile 配置或提交历史。
+   */
+  readonly token?: string
 }
 
 /** 一次 push 的结果。 */
@@ -175,6 +180,31 @@ export async function syncPush(
   config: SyncConfig,
   now: number = Date.now(),
 ): Promise<SyncPushRun> {
+  // 首次同步**必须先 clone**：本地 `git init` 出来的仓库与远端是两条无关的历史线，
+  // push 会被拒（`not a simple fast-forward`）。这一步得在写镜像之前，否则写好的内容
+  // 会被随后的 clone 覆盖掉。
+  if (config.remote !== undefined && config.remote !== '' && !existsSync(join(config.mirrorDir, '.git'))) {
+    const ready = await ensureMirrorRepo({
+      dir: config.mirrorDir,
+      url: config.remote,
+      ...config.branch === undefined ? {} : { branch: config.branch },
+      ...config.token === undefined ? {} : { token: config.token },
+    })
+    if (!ready.cloned) {
+      return {
+        files: 0,
+        written: 0,
+        unchanged: 0,
+        removed: 0,
+        tombstones: 0,
+        committed: false,
+        pushed: false,
+        error: `首次同步无法 clone 远端：${ready.error ?? '未知原因'}`,
+        ...ready.kind === undefined ? {} : { errorKind: ready.kind },
+      }
+    }
+  }
+
   const files = await collectMirror(memory)
   const write = writeMirror({ targetDir: config.mirrorDir, files })
 
@@ -210,6 +240,7 @@ export async function syncPush(
     dir: config.mirrorDir,
     url: config.remote,
     ...config.branch === undefined ? {} : { branch: config.branch },
+    ...config.token === undefined ? {} : { token: config.token },
   })
 
   return {
@@ -272,11 +303,31 @@ export async function syncPull(
   now: number = Date.now(),
 ): Promise<SyncPullRun> {
   if (config.remote !== undefined && config.remote !== '') {
+    // 同 push：首次必须先 clone，否则本地 init 出来的仓库与远端没有共同祖先。
+    if (!existsSync(join(config.mirrorDir, '.git'))) {
+      const ready = await ensureMirrorRepo({
+        dir: config.mirrorDir,
+        url: config.remote,
+        ...config.branch === undefined ? {} : { branch: config.branch },
+        ...config.token === undefined ? {} : { token: config.token },
+      })
+      if (!ready.cloned) {
+        return {
+          pulled: false,
+          imported: 0,
+          conflicts: 0,
+          orphaned: 0,
+          error: `首次同步无法 clone 远端：${ready.error ?? '未知原因'}`,
+          ...ready.kind === undefined ? {} : { errorKind: ready.kind },
+        }
+      }
+    }
     await ensureRemote(config.mirrorDir, config.remote)
     const remote = await pullMirror({
       dir: config.mirrorDir,
       url: config.remote,
       ...config.branch === undefined ? {} : { branch: config.branch },
+      ...config.token === undefined ? {} : { token: config.token },
     })
     if (!remote.ok) {
       return {

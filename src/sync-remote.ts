@@ -84,6 +84,44 @@ function isRepo(dir: string): boolean {
 }
 
 /**
+ * 确保镜像目录是一个**与远端有共同历史**的仓库。
+ *
+ * 首次同步时如果只 `git init`，本地与远端是两条无关的历史线——push 会被拒
+ * （`Push rejected because it was not a simple fast-forward`）。这是 2026-11-11
+ * 第一次用真实仓库跑时撞出来的：单元测试里没有真远端，所以永远发现不了。
+ *
+ * 因此首次必须 clone，而不是 init + push。
+ *
+ * @param options - 目录、远端地址、分支与 token。
+ * @returns 是否执行了 clone；失败时带分类。
+ */
+export async function ensureMirrorRepo(options: RemoteOptions): Promise<MirrorRepoRun> {
+  if (isRepo(options.dir)) return { cloned: false }
+  const { git, http } = await loadGit()
+  try {
+    await git.clone({
+      fs: nodeFs,
+      http,
+      dir: options.dir,
+      url: options.url,
+      ref: options.branch ?? DEFAULT_BRANCH,
+      depth: 1,
+      onAuth: authFor(options.token),
+    })
+    return { cloned: true }
+  } catch (error: unknown) {
+    return { cloned: false, ...classify(error) }
+  }
+}
+
+/** {@link ensureMirrorRepo} 的结果。 */
+export interface MirrorRepoRun {
+  readonly cloned: boolean
+  readonly error?: string
+  readonly kind?: 'auth' | 'network' | 'unknown'
+}
+
+/**
  * 把本地提交推到远端。
  *
  * @param options - 目录、远端地址、分支与 token。
