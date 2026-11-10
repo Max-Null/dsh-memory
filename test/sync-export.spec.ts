@@ -7,7 +7,7 @@
  *    另一端拉下来看起来像「这个项目的记忆凭空少了一批」。
  */
 import { describe, expect, it } from 'vitest'
-import { exportRecords, workspaceSlug } from '../src/sync-export.ts'
+import { exportRecords, projectName } from '../src/sync-export.ts'
 
 /** 造一份 unit 形状的文档。 */
 function doc(blocks: Record<string, unknown>): unknown {
@@ -90,20 +90,31 @@ describe('sync export', () => {
     const paths = run.files.map(f => f.path.replace(/\\/gu, '/')).sort()
     expect(paths).toEqual([
       `records/global/g1.json`,
-      `records/project/${workspaceSlug('H:\\proj\\demo')}/p1.json`,
+      `records/project/${projectName('H:\\proj\\demo')}/p1.json`,
     ])
   })
 
-  it('工作区目录名与引擎实际写出的文件名同口径（本机三处真实路径）', () => {
-    // 这些值取自磁盘上真实存在的 `memory_project_<slug>.json`；算法是纯字符串运算，
-    // 换机器也成立。两边分叉的后果见文件头 ②。
-    expect(workspaceSlug('H:\\MaxNull\\WorkStation')).toBe('3rf76j')
-    expect(workspaceSlug('H:\\MaxNull\\WorkStation\\deepseek-harness')).toBe('34he9k')
-    expect(workspaceSlug('H:\\MaxNull\\WorkStation\\seek-soul-in-darkness')).toBe('ubctph')
+  it('跨机身份是项目名：不同盘符的同一项目必须对上', () => {
+    // 这是 2026-11-11 改口径的目的——本机 H:\MaxNull\WorkStation 与工作机 D:\WorkStation
+    // 是同一个项目，记忆才能汇合。用路径哈希时它们是两个互不相认的项目。
+    expect(projectName('H:\\MaxNull\\WorkStation')).toBe('workstation')
+    expect(projectName('D:\\WorkStation')).toBe('workstation')
+    expect(projectName('/home/max/workstation')).toBe('workstation')
   })
 
-  it('大小写不同的同一路径得到同一个 slug（Windows 路径不区分大小写）', () => {
-    expect(workspaceSlug('H:\\MaxNull\\WorkStation')).toBe(workspaceSlug('h:\\maxnull\\workstation'))
+  it('子项目各用自己的目录名，不与父工作区混', () => {
+    expect(projectName('H:\\MaxNull\\WorkStation\\deepseek-harness')).toBe('deepseek-harness')
+    expect(projectName('H:\\MaxNull\\WorkStation\\seek-soul-in-darkness')).toBe('seek-soul-in-darkness')
+  })
+
+  it('大小写统一——否则 Windows 与 WSL 会分裂成两个目录', () => {
+    expect(projectName('H:\\MaxNull\\WorkStation')).toBe(projectName('h:\\maxnull\\workstation'))
+    expect(projectName('/mnt/h/MaxNull/WorkStation')).toBe(projectName('H:\\MaxNull\\WorkStation'))
+  })
+
+  it('根目录拿到兜底名，不会产生空目录名', () => {
+    expect(projectName('H:\\')).toBe('root')
+    expect(projectName('/')).toBe('root')
   })
 
   it('文档形状不符时返回空结果而不是抛错——一个坏库不该卡死整个同步', () => {

@@ -20,7 +20,7 @@
  * @see docs/设计/2026-11-06-记忆云同步-设计方案.md
  */
 
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 /** 一条记录在镜像里的位置与内容。 */
 export interface SyncRecordFile {
@@ -102,19 +102,20 @@ function blocksOf(document: unknown): Record<string, Record<string, unknown>> {
 }
 
 /**
- * 工作区目录名——必须与引擎写记忆文件名时用的口径一致（`engine.ts` 的
- * `projectBackendName`：cwd 小写后过 djb2，取 base36）。
+ * 项目在同步面上的目录名——**项目目录名，不是路径哈希**。
  *
- * 两边算法分叉的后果很隐蔽：镜像会落在另一个目录名下，另一端拉下来后
- * 看起来像「这个项目的记忆凭空少了一批」。
+ * 2026-11-06 的第一版用的是 `cwd` 的 djb2 哈希（与引擎本地文件名同口径）。那个身份
+ * 只在一台机器内成立：换台机器换个盘符，同一个项目就成了另一个项目，记忆会静默分裂
+ * 成互不相认的两份。2026-11-11 改成项目名，依据是用户的三条约束——「以项目名为准」
+ * 「不会出现同名不同项目」「工作机上的目录不一样」。
+ *
+ * 统一小写：Windows 路径大小写不敏感、WSL/Linux 敏感，同一个项目在两处拼写可能不同；
+ * 不规范化就会变成 `records/project/WorkStation` 与 `records/project/workstation`
+ * 两个目录，又一次静默分裂。
  */
-export function workspaceSlug(cwd: string): string {
-  let hash = 5381
-  const text = cwd.toLowerCase()
-  for (let index = 0; index < text.length; index += 1) {
-    hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0
-  }
-  return Math.abs(hash).toString(36)
+export function projectName(cwd: string): string {
+  const base = basename(cwd)
+  return base === '' ? 'root' : base.toLowerCase()
 }
 
 /** 只保留白名单字段；值为 `undefined` 的键不落进文件（避免 `"x": null` 噪声）。 */
@@ -160,7 +161,7 @@ export function exportRecords(options: SyncExportOptions): SyncExportRun {
   const projects = [...(options.projectDocuments ?? [])].sort((left, right) => left.cwd.localeCompare(right.cwd))
   for (const { cwd, document } of projects) {
     for (const [id, block] of Object.entries(blocksOf(document))) {
-      const file = recordFile(id, block, [RECORDS_DIR, 'project', workspaceSlug(cwd)])
+      const file = recordFile(id, block, [RECORDS_DIR, 'project', projectName(cwd)])
       if (file === undefined) {
         skippedQuarantined += 1
         continue
