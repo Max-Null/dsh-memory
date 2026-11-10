@@ -510,6 +510,12 @@ export interface MemoryConfig {
    */
   backup?: MemoryBackupConfig
   /**
+   * 云同步配置（2026-11-11）：`{ mirrorDir, remote?, branch?, envName? }`。
+   *
+   * 缺省不配 = 不同步。设计见 `docs/设计/2026-11-06-记忆云同步-设计方案.md`。
+   */
+  sync?: unknown
+  /**
    * 日记开关的**部署默认值**（2026-10-24）。运行中的选择在面板里改，写入
    * `$DSH_HOME/memory-settings.json`；两边都开才开——否则部署时关掉会被
    * 使用者那一侧缺省的 `true` 翻回来。
@@ -682,6 +688,17 @@ export class MemoryEngine extends Service {
    */
   projectStorageRoots(): string[] {
     return [...this.projectTables.keys()].map(cwd => this.projectRootFor(cwd))
+  }
+
+  /**
+   * 已经打开过的工作区 cwd 列表（同步导出用）。
+   *
+   * 与 {@link projectStorageRoots} 的区别：那个给的是存储根（`<cwd>/.dsh/storages`），
+   * 这个给 cwd 本身。导出要按 cwd 调 `list({ namespace: 'project' }, cwd)`，从存储根
+   * 反推 cwd 依赖目录层级，不如直接给。
+   */
+  projectCwds(): string[] {
+    return [...this.projectTables.keys()]
   }
 
   /**

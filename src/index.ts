@@ -11,6 +11,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import { MemoryEngine } from './engine.ts'
+import { conflictFiles, syncPull, syncPush, syncStatus } from './sync-service.ts'
+import type { SyncConfig } from './sync-service.ts'
 import type { MemoryConfig, MemoryHit, MemoryRecord } from './engine.ts'
 import { MemoryGateway } from './remote.ts'
 import { runMemoryBackup } from './backup.ts'
@@ -61,6 +63,12 @@ export const Config = z.object({
   semanticTopK: z.number(),
   embeddings: z.any(),
   backup: z.any(),
+  /**
+   * 云同步配置（2026-11-11）：`{ mirrorDir, remote?, branch?, envName? }`。
+   *
+   * 缺省不配 = 不同步。设计见 `docs/设计/2026-11-06-记忆云同步-设计方案.md`。
+   */
+  sync: z.any(),
   /**
    * 日记开关。默认开——这是**功能默认，不是采集默认**。
    *
@@ -1098,6 +1106,84 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
       return { date, text: text ?? '', exists: text !== undefined }
     },
     presentCall: args => present('Read diary', 'read', args.date),
+  }))
+
+  // ── 云同步（2026-11-11）──────────────────────────────────────────────
+  //
+  // **不向模型暴露 git**：模型只说「同步一下 / 看看状态」，具体 add/commit/push 由插件
+  // 决定。把 `git pull --rebase && git add && git commit && git push` 那一串交给模型，
+  // 出错难排查，也容易越权。
+  //
+  // 缺省不启用：没配 `memory.sync` 时这两个工具直接报「未配置」，而不是默默什么都不做——
+  // 静默不动作比报错更坏。
+  const syncConfig = (): SyncConfig => {
+    const raw = (config?.sync ?? {}) as {
+      mirrorDir?: unknown
+      remote?: unknown
+      branch?: unknown
+      envName?: unknown
+    }
+    const mirrorDir = typeof raw.mirrorDir === 'string' && raw.mirrorDir !== ''
+      ? raw.mirrorDir
+      : join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'memory-sync')
+    return {
+      mirrorDir,
+      ...typeof raw.remote === 'string' && raw.remote !== '' ? { remote: raw.remote } : {},
+      ...typeof raw.branch === 'string' && raw.branch !== '' ? { branch: raw.branch } : {},
+      ...typeof raw.envName === 'string' && raw.envName !== '' ? { envName: raw.envName } : {},
+    }
+  }
+
+  ctx.tools.register(defineTool({
+    name: registered('memory_sync'),
+    description: 'Push this machine\'s memories to the sync repo, pull other machines\' memories back, or inspect sync state. Conflicts are never auto-resolved — both versions are kept under conflicts/ for a human to settle. 把本机记忆推到同步仓库 / 拉回其他机器的记忆 / 查看同步状态。冲突不会自动裁决：两边版本都留在 conflicts/ 里等人处理。',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['status', 'pull', 'push'],
+        description: 'status = 只看状态（不读不写）；pull = 拉取并导入；push = 镜像、提交并推送。',
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => renderJson(value),
+    },
+    async execute(args) {
+      const cfg = syncConfig()
+      const run = args.action === 'push'
+        ? await syncPush(memory, cfg)
+        : args.action === 'pull'
+          ? await syncPull(memory, cfg)
+          : await syncStatus(cfg)
+      // 工具返回值要求 `Record<string, JsonValue>`；这几个结果都是普通可序列化对象，
+      // 结构化类型对不上而已。走一遍 JSON 往返顺便保证它确实可序列化。
+      return JSON.parse(JSON.stringify(run)) as Record<string, never>
+    },
+    presentCall: args => present('Sync memory', 'other'),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: registered('memory_conflicts'),
+    description: 'List memory conflicts left by sync. Sync never auto-resolves them: if two machines changed the same memory, both versions were kept. 列出同步留下的记忆冲突。同步不会自动裁决——两端改过同一条时，两个版本都留着。',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['list'],
+        description: 'list = 列出 conflicts/ 下的冲突文件。',
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => renderJson(value),
+    },
+    async execute() {
+      const cfg = syncConfig()
+      const files = conflictFiles(cfg)
+      return { count: files.length, files } as unknown as Record<string, never>
+    },
+    presentCall: () => present('List memory conflicts', 'other'),
   }))
 
   // 定时备份（2026-10-18 事故后新增）：只读复制，绝不走引擎的写入路径。
