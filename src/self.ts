@@ -25,10 +25,12 @@ export const SELF_VERSION = ((): string => {
   }
 })()
 
-export const SELF_DESCRIPTION =
-  `[记忆系统自述] 本环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
-  + '你有 16 个工具：**记忆工具** memory_save / memory_search / memory_list / memory_update / memory_confirm / memory_forget / memory_move / memory_sweep（`memory_confirm` 仅在用户明确要求放行隔离记录时用；`memory_move` 把放错了层的记忆移到 global、当前工作区或相对祖先；`memory_sweep` 是只读体检——失效清单、久未命中、候选与预算占用，不修改任何状态）；**提示词模板工具** prompt_search / prompt_get / prompt_list / prompt_add（模板是 md 文件、**永不注入**，走这条通道，不会混进记忆检索）；'
-  + '**同步工具** memory_sync / memory_conflicts：跨环境同步；`memory_sync` 的 `status` 只看状态、`pull` 拉取并导入、`push` 镜像并推送，`memory_conflicts` 列出**未被自动裁决**的冲突，同步**不会**自动决定哪一边对——两边都改过同一条时两个版本都留着等人处理，记忆被静默覆盖就没了；'
+function buildDescription(syncEnabled: boolean): string {
+  return (`[记忆系统自述] 本环境内置跨会话记忆服务（dsh-memory v${SELF_VERSION}）。`
+  + '你有 ' + (syncEnabled ? 16 : 14) + ' 个工具：**记忆工具** memory_save / memory_search / memory_list / memory_update / memory_confirm / memory_forget / memory_move / memory_sweep（`memory_confirm` 仅在用户明确要求放行隔离记录时用；`memory_move` 把放错了层的记忆移到 global、当前工作区或相对祖先；`memory_sweep` 是只读体检——失效清单、久未命中、候选与预算占用，不修改任何状态）；**提示词模板工具** prompt_search / prompt_get / prompt_list / prompt_add（模板是 md 文件、**永不注入**，走这条通道，不会混进记忆检索）；'
+  + (syncEnabled
+    ? '**同步工具** memory_sync / memory_conflicts：跨环境同步；`memory_sync` 的 `status` 只看状态、`pull` 拉取并导入、`push` 镜像并推送，`memory_conflicts` 列出**未被自动裁决**的冲突，同步**不会**自动决定哪一边对——两边都改过同一条时两个版本都留着等人处理，记忆被静默覆盖就没了；'
+    : '')
   + '**日记工具** diary_read / diary_write：日记是 md 文件，落在 `<DSH_HOME>/diary`，与记忆**分开存、不进检索、不占注入预算**。记的是经历——发生了什么（有细节）、我怎么想（可以有情绪、可以没结论）、关于他（他说了什么、我注意到了什么）；不是任务清单（那是 git log），也不是结论（那是 memory_save）。读它不吃预算，需要时整篇读。'
   + '记忆分两层：`global` 跨项目（偏好 / 习惯 / 环境知识），`project` 跟随工作区（落在 `<cwd>/.dsh/storages/`，随 git 提交分享）。'
   + '**何时写入**（不必刻意找机会，遇到下面这些就动手）：'
@@ -46,3 +48,15 @@ export const SELF_DESCRIPTION =
   + '装不下时注入末尾会出现一行 `（另有 N 条常驻因预算未注入：…短摘要…）`——**那是「有常驻记忆并不在场」的唯一信号**，看到它就该逐条评估撤下。'
   + '发现某条记忆与实际不符时用 memory_update 修正（保持生效）；确认没用的用 memory_forget。'
   + '（English: dsh-memory provides cross-session memory. Writes take effect immediately; save durable preferences, corrections and reusable conclusions — not transient state, guesses, or facts readable from the repo (record where to look instead). Always add multi-angle keywords. Pass `injected: true` to keep one resident every turn — reserve that for rules and standing agreements; facts stay search-only. Resident injection runs on a budget, so a pinned memory is only queued, never guaranteed to be in context.)'
+
+  )
+}
+
+
+/** 能力全貌（面板 / 远端视图用；同步未启用时也展示它的存在）。 */
+export const SELF_DESCRIPTION = buildDescription(true)
+
+/** 按当前是否启用同步生成自述——系统提示那一路用这个。 */
+export function buildSelfDescription(syncEnabled: boolean): string {
+  return buildDescription(syncEnabled)
+}

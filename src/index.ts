@@ -19,7 +19,7 @@ import { runMemoryBackup } from './backup.ts'
 import { ANCHOR_KINDS } from './anchors.ts'
 import type { MemoryAnchor } from './anchors.ts'
 import { mountMemoryApi } from './routes.ts'
-import { SELF_DESCRIPTION } from './self.ts'
+import { buildSelfDescription } from './self.ts'
 import { appendEntry, diaryDir, lastWriteAt, pointerLine, readDay, recentDates } from './diary.ts'
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
@@ -601,12 +601,19 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     text: GUIDANCE,
   })
 
+  // 云同步是**默认关闭**的（2026-11-11）：实验性功能不该影响别人的安装。判据是
+  // 「配了 remote」——只配 mirrorDir 没有意义（本地镜像不解决任何问题）。
+  // 关闭时那两个工具**根本不注册**，而不是注册了再报错：模型看不到就不会去调。
+  const syncRaw = (config?.sync ?? {}) as { remote?: unknown }
+  const syncEnabled = typeof syncRaw.remote === 'string' && syncRaw.remote !== ''
+
   // 0.3.2：记忆机制自述——常驻注入（不落用户存储），随发版更新。
   // order 49 < recall(50)：机制说明在具体记忆内容之前。
   ctx.systemPrompt.context({
     name: 'memory:self',
     order: 49,
-    text: SELF_DESCRIPTION,
+    // 自述里的工具清单必须与实际注册的一致：漏一个，模型就按一份不存在的工具面行事。
+    text: buildSelfDescription(syncEnabled),
   })
 
   const injectionBudget = config?.injectionBudget ?? DEFAULT_INJECTION_BUDGET
@@ -1134,6 +1141,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     }
   }
 
+  if (syncEnabled) {
   ctx.tools.register(defineTool({
     name: registered('memory_sync'),
     description: 'Push this machine\'s memories to the sync repo, pull other machines\' memories back, or inspect sync state. Conflicts are never auto-resolved — both versions are kept under conflicts/ for a human to settle. 把本机记忆推到同步仓库 / 拉回其他机器的记忆 / 查看同步状态。冲突不会自动裁决：两边版本都留在 conflicts/ 里等人处理。',
@@ -1185,6 +1193,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     },
     presentCall: () => present('List memory conflicts', 'other'),
   }))
+  }
 
   // 定时备份（2026-10-18 事故后新增）：只读复制，绝不走引擎的写入路径。
   // 首次延迟 1 分钟避开启动高峰；此后按 `backup.intervalMinutes` 重复；`unref` 不挡进程退出。
