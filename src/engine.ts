@@ -1974,6 +1974,35 @@ export class MemoryEngine extends Service {
    * 起可改 `injected`：**省略则保留原值**（连 `injectedAuto` 一起不动），给值即接管。若新
    * 内容命中危险规则则转为隔离（与写入路径同一判定），并连带撤下注入。
    */
+  /**
+   * 按**指定 id** 写入一条外来记录——同步导入专用。
+   *
+   * 与 {@link remember} 的区别：`remember` 生成新 id 并走内容判定；`adopt` 接收另一端
+   * 记录的 id 与整块内容，原样落进来。**必须保 id**——否则同一件事在五个环境里会变成
+   * 五条互不相干的记忆，而「共享一份记忆」正是同步要达成的事。
+   *
+   * 与 {@link update} 的区别：`update` 只改可编辑字段（content / keywords / injected /
+   * anchor）并把 `updatedAt` 推到当下；`adopt` 连 `createdAt`、`stale`、隔离标记一起搬
+   * ——那是「另一端此刻的完整状态」，不是一次本地编辑。因此也**不重算 `updatedAt`**：
+   * 拿导入时刻覆盖掉原始时间会让冲突判定（按 `updatedAt` 取新）失效。
+   *
+   * 仍然过 `putBlock` 的 schema 校验（门一）：外来数据一样要合规。
+   */
+  async adopt(id: MemoryId, block: StoredBlock, projectCwd?: string): Promise<MemoryRecord> {
+    return this.writeScope(projectCwd, async () => {
+      const table = block.namespace === 'project'
+        ? await this.projectTableFor(projectCwd)
+        : this.requireTable('global')
+      if (table === undefined) {
+        throw new Error('adopt: project memory requires a workspace cwd')
+      }
+      await this.putBlock(table, id, block)
+      const record = toRecord(id, block)
+      this.ctx.emit('memory/changed', { operation: 'remembered', record })
+      return record
+    })
+  }
+
   async update(id: MemoryId, patch: MemoryPatch, projectCwd?: string): Promise<MemoryRecord> {
     return this.writeScope(projectCwd, () => this.updateInner(id, patch, projectCwd))
   }

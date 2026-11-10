@@ -66,6 +66,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4",
+    "isomorphic-git": "^1.44.11",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
