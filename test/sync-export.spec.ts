@@ -102,6 +102,16 @@ describe('sync export', () => {
     expect(projectName('/home/max/workstation')).toBe('workstation')
   })
 
+  it('Windows 风格路径在任何平台都得到同一个项目名', () => {
+    // **这条是 CI 抓出来的回归**：早先用 `node:path` 的 basename，它按平台分隔符切分——
+    // 同一个 `H:\proj\demo` 在 Windows 上是 `demo`，在 Linux runner 上变成整串
+    // `h:\proj\demo`，于是 `records/project/h:\proj\demo/` 这种目录名就冒出来了。
+    // 本地 Windows 全绿，只有 CI 会红——所以这条断言必须按"任何平台都成立"写。
+    expect(projectName('H:\\proj\\demo')).toBe('demo')
+    expect(projectName('C:\\a\\b\\c')).toBe('c')
+    expect(projectName('a\\b')).toBe('b')
+  })
+
   it('子项目各用自己的目录名，不与父工作区混', () => {
     expect(projectName('H:\\MaxNull\\WorkStation\\deepseek-harness')).toBe('deepseek-harness')
     expect(projectName('H:\\MaxNull\\WorkStation\\seek-soul-in-darkness')).toBe('seek-soul-in-darkness')

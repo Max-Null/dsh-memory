@@ -20,7 +20,7 @@
  * @see docs/设计/2026-11-06-记忆云同步-设计方案.md
  */
 
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 
 /** 一条记录在镜像里的位置与内容。 */
 export interface SyncRecordFile {
@@ -114,8 +114,15 @@ function blocksOf(document: unknown): Record<string, Record<string, unknown>> {
  * 两个目录，又一次静默分裂。
  */
 export function projectName(cwd: string): string {
-  const base = basename(cwd)
-  return base === '' ? 'root' : base.toLowerCase()
+  // **不能用 `node:path` 的 basename**：它按平台分隔符切分，同一个字符串在 Windows 上
+  // 得到 `demo`、在 Linux 上得到整串 `H:\proj\demo`。2026-11-11 的 CI 就是这么红的
+  // （本地 Windows 全绿，Linux runner 上 `records/project/h:\proj\demo/`）。
+  // 两种分隔符都认，结果才跨平台一致——这也正是这个函数存在的意义。
+  const segments = cwd.replace(/\\/gu, '/').split('/').filter(segment => segment !== '')
+  const base = segments[segments.length - 1] ?? ''
+  // 盘符根（`H:\`）与路径根（`/`）都退到 `root`，不产生空目录名。
+  if (base === '' || /^[a-z]:$/iu.test(base)) return 'root'
+  return base.toLowerCase()
 }
 
 /** 只保留白名单字段；值为 `undefined` 的键不落进文件（避免 `"x": null` 噪声）。 */
