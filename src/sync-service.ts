@@ -23,6 +23,7 @@ import type { ImportConflict, ImportedBlock, IncomingRecord } from './sync-impor
 import { SYNC_STATE_FILE, TOMBSTONE_DIR, dropTombstoned, planTombstones } from './sync-tombstone.ts'
 import type { SyncState, Tombstone } from './sync-tombstone.ts'
 import { ensureRemote, pullMirror, pushMirror } from './sync-remote.ts'
+import { writeMirror } from './sync-writer.ts'
 
 /** 同步配置。 */
 export interface SyncConfig {
@@ -175,7 +176,6 @@ export async function syncPush(
   now: number = Date.now(),
 ): Promise<SyncPushRun> {
   const files = await collectMirror(memory)
-  const { writeMirror } = await import('./sync-writer.ts')
   const write = writeMirror({ targetDir: config.mirrorDir, files })
 
   // 墓碑：用「上次状态」与「本次要写的 id」对比。首次同步没有上次状态 → 不产生墓碑。
