@@ -1073,8 +1073,10 @@ function SyncField(props: {
       },
       style: {
         width: '100%', marginTop: 4, padding: '6px 10px', fontSize: 12.5, boxSizing: 'border-box',
-        background: 'var(--dsw-alias-bg-layer-1, #0f141d)',
-        border: '1px solid var(--dsw-alias-border-l2, #1e2836)', borderRadius: 8,
+        // 半透明中性底色跟随主题：插件页这张卡片在浅色主题下是白底，写死深色兜底会变成黑框
+        // （2026-11-13 用户指出「输入框咋是黑的」）。深色主题下它自然变暗，不需要两套值。
+        background: 'rgba(127, 127, 127, 0.07)',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127, 127, 127, 0.3))', borderRadius: 8,
         color: 'var(--dsw-alias-label-primary, #d8e0ea)', outline: 'none',
       },
     }),
@@ -1084,6 +1086,97 @@ function SyncField(props: {
   )
 }
 
+
+/**
+ * 云同步 token：密码样式的输入框 + 「已设置 / 未设置」状态 + 清除。
+ *
+ * **从不回显明文**：输入框是 `type="password"`，状态只问「是否已设置」。
+ * 令牌存在 `$DSH_HOME/memory-sync-token` 的独立文件里，**不进 profile 配置**——
+ * patch 文件会被复制、分享、提交，令牌进去就等于泄露（这也是它不放进那三个
+ * 文本框的原因）。
+ */
+function SyncTokenField(): ReactNode {
+  const [saved, setSaved] = useState<boolean | undefined>(undefined)
+  const [draft, setDraft] = useState('')
+  const [note, setNote] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    void api('syncToken', { action: 'status' })
+      .then((value) => {
+        if (!alive) return
+        setSaved((value as { set?: boolean } | undefined)?.set === true)
+      })
+      .catch((error: unknown) => {
+        if (alive) setNote(`读取状态失败：${String(error)}`)
+      })
+    return () => { alive = false }
+  }, [])
+
+  const commit = (): void => {
+    const token = draft.trim()
+    if (token === '') return
+    void api('syncToken', { action: 'set', token })
+      .then(() => { setSaved(true); setDraft(''); setNote('已保存') })
+      .catch((error: unknown) => { setNote(`保存失败：${String(error)}`) })
+  }
+
+  const clear = (): void => {
+    void api('syncToken', { action: 'clear' })
+      .then(() => { setSaved(false); setNote('已清除') })
+      .catch((error: unknown) => { setNote(`清除失败：${String(error)}`) })
+  }
+
+  return createElement('div', { style: { padding: '8px 0 6px' } },
+    createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      createElement('div', {
+        style: { fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-primary, #d8e0ea)' },
+      }, '访问令牌（PAT）'),
+      createElement('span', {
+        style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)' },
+      }, saved === undefined ? '读取中…' : saved ? '已设置' : '未设置'),
+      saved === true
+        ? createElement('button', {
+          type: 'button',
+          'aria-label': '清除云同步访问令牌',
+          onClick: clear,
+          style: {
+            marginLeft: 'auto', padding: 0, border: 'none', background: 'none', cursor: 'pointer',
+            fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', textDecoration: 'underline',
+          },
+        }, '清除')
+        : null,
+    ),
+    createElement('input', {
+      type: 'password',
+      value: draft,
+      autoComplete: 'off',
+      'aria-label': '云同步访问令牌',
+      placeholder: saved === true ? '已设置，输入新值可覆盖' : 'ghp_... 或 github_pat_...',
+      onChange: (event: { target: { value: string } }) => { setDraft(event.target.value) },
+      onBlur: commit,
+      onKeyDown: (event: { key: string, currentTarget: { blur: () => void } }) => {
+        if (event.key === 'Enter') event.currentTarget.blur()
+      },
+      style: {
+        width: '100%', marginTop: 4, padding: '6px 10px', fontSize: 12.5, boxSizing: 'border-box',
+        // 半透明中性底色跟随主题：插件页这张卡片在浅色主题下是白底，写死深色兜底会变成黑框
+        // （2026-11-13 用户指出「输入框咋是黑的」）。深色主题下它自然变暗，不需要两套值。
+        background: 'rgba(127, 127, 127, 0.07)',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127, 127, 127, 0.3))', borderRadius: 8,
+        color: 'var(--dsw-alias-label-primary, #d8e0ea)', outline: 'none',
+      },
+    }),
+    createElement('div', {
+      style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', marginTop: 3, lineHeight: 1.45 },
+    }, '令牌存在 $DSH_HOME/memory-sync-token 的独立文件里，不进插件配置；也认环境变量 DSH_MEMORY_SYNC_TOKEN（优先）。'),
+    note === ''
+      ? null
+      : createElement('div', {
+        style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', marginTop: 2 },
+      }, note),
+  )
+}
 
 /**
  * 插件页「记忆」详情里的配置卡片（0.19.0 起是日记开关，2026-11-12 加云同步开关与连接配置）。
@@ -1177,9 +1270,10 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
           placeholder: 'main',
           onCommit: next => write(['sync', 'branch'], next, '云同步分支'),
         }),
+        createElement(SyncTokenField),
         createElement('div', {
-          style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', lineHeight: 1.5 },
-        }, '访问令牌（PAT）不进配置：设置环境变量 ', createElement('code', null, 'DSH_MEMORY_SYNC_TOKEN'), ' 后重启实例。它一旦落进 patch 文件就会跟着被复制和分享。'),
+          style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', lineHeight: 1.5, marginTop: 2 },
+        }, '以上字段写进 profile 的 cordis.patch.yml，改完要重启实例生效。'),
       )
       : null)
 }

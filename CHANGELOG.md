@@ -14,14 +14,14 @@
 
 修复：
 
-- **面板**：云同步开关打开后，卡片里出现三个输入框（远端地址 / 镜像目录 / 分支）。失焦或回车提交，值写进 profile 的 `cordis.patch.yml`。提交时机选失焦而不是每次按键——半截地址（`https://github.co`）不该落盘。
-- **token**：新增 `resolveSyncConfig()`（纯函数），从环境变量 `DSH_MEMORY_SYNC_TOKEN` 取 token 后传给 `syncPush` / `syncPull`。**token 仍然不进配置**：它一旦落进 patch 文件就会跟着被复制、分享、提交，所以面板里也没有它的输入框。
+- **面板**：云同步开关打开后，卡片里出现三个输入框（远端地址 / 镜像目录 / 分支），外加一个**密码样式的令牌输入框**（不回显明文、只显示「已设置 / 未设置」、带清除按钮）。文本字段失焦或回车提交，值写进 profile 的 `cordis.patch.yml`；提交时机选失焦而不是每次按键——半截地址（`https://github.co`）不该落盘。
+- **token**：从环境变量 `DSH_MEMORY_SYNC_TOKEN` **或** `$DSH_HOME/memory-sync-token` 独立文件取（环境变量优先），由新增的 `resolveSyncConfig()` 传给 `syncPush` / `syncPull`。**令牌不进 profile 配置**：patch 文件会被复制、分享、提交，所以它不在那三个文本框里，而是单独的密码框 + 独立文件。新增 `/memory/api/syncToken`（status / set / clear），面板只查「是否已设置」，从不回显明文。
 
 **默认值仍然是「不往任何地方推」**：`remote` 缺省为空串，`syncPush` 在 remote 为空时直接短路返回「未配置远端地址 —— 已完成本地提交」。所以打开开关不会让任何人的记忆流向别人的仓库——这一点在 0.22.3 里没有变，只是现在用户有地方填自己的地址了。
 
-测试：新增 `test/sync-config.spec.ts` 8 条，锁住三件事——缺省值回退、空字符串视同没配、**token 只从环境变量来（配置里写 token 也不采用）**。
+测试：新增 `test/sync-config.spec.ts` 与 `test/sync-token.spec.ts` 各 8 条，锁住缺省值回退、空字符串视同没配、**token 只从环境变量或独立文件来（配置里写 token 也不采用）**、环境变量优先于文件。
 
-dev 实测（源码 dev 壳）：开开关 → 三个输入框出现 → 填入假地址并回车 → `cordis.patch.yml` 写入 `sync.remote`，确认后已清回默认。
+dev 实测（源码 dev 壳）：开开关 → 三个文本框 + 密码样式令牌框出现 → 填假地址回车 → `cordis.patch.yml` 写入 `sync.remote`；填假令牌回车 → `$DSH_HOME/memory-sync-token` 出现且输入框 `type=password` 且提交后清空；点「清除」→ 文件删除、状态回「未设置」。测试值随后已清回默认。
 
 ## [0.22.2] - 2026-11-12
 

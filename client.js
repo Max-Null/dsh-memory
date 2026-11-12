@@ -1086,8 +1086,10 @@ function SyncField(props) {
         padding: "6px 10px",
         fontSize: 12.5,
         boxSizing: "border-box",
-        background: "var(--dsw-alias-bg-layer-1, #0f141d)",
-        border: "1px solid var(--dsw-alias-border-l2, #1e2836)",
+        // 半透明中性底色跟随主题：插件页这张卡片在浅色主题下是白底，写死深色兜底会变成黑框
+        // （2026-11-13 用户指出「输入框咋是黑的」）。深色主题下它自然变暗，不需要两套值。
+        background: "rgba(127, 127, 127, 0.07)",
+        border: "1px solid var(--dsw-alias-border-l2, rgba(127, 127, 127, 0.3))",
         borderRadius: 8,
         color: "var(--dsw-alias-label-primary, #d8e0ea)",
         outline: "none"
@@ -1096,6 +1098,105 @@ function SyncField(props) {
     (0, import_react.createElement)("div", {
       style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 3, lineHeight: 1.45 }
     }, hint)
+  );
+}
+function SyncTokenField() {
+  const [saved, setSaved] = (0, import_react.useState)(void 0);
+  const [draft, setDraft] = (0, import_react.useState)("");
+  const [note, setNote] = (0, import_react.useState)("");
+  (0, import_react.useEffect)(() => {
+    let alive = true;
+    void api("syncToken", { action: "status" }).then((value) => {
+      if (!alive) return;
+      setSaved(value?.set === true);
+    }).catch((error) => {
+      if (alive) setNote(`\u8BFB\u53D6\u72B6\u6001\u5931\u8D25\uFF1A${String(error)}`);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const commit = () => {
+    const token = draft.trim();
+    if (token === "") return;
+    void api("syncToken", { action: "set", token }).then(() => {
+      setSaved(true);
+      setDraft("");
+      setNote("\u5DF2\u4FDD\u5B58");
+    }).catch((error) => {
+      setNote(`\u4FDD\u5B58\u5931\u8D25\uFF1A${String(error)}`);
+    });
+  };
+  const clear = () => {
+    void api("syncToken", { action: "clear" }).then(() => {
+      setSaved(false);
+      setNote("\u5DF2\u6E05\u9664");
+    }).catch((error) => {
+      setNote(`\u6E05\u9664\u5931\u8D25\uFF1A${String(error)}`);
+    });
+  };
+  return (0, import_react.createElement)(
+    "div",
+    { style: { padding: "8px 0 6px" } },
+    (0, import_react.createElement)(
+      "div",
+      { style: { display: "flex", alignItems: "center", gap: 8 } },
+      (0, import_react.createElement)("div", {
+        style: { fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d8e0ea)" }
+      }, "\u8BBF\u95EE\u4EE4\u724C\uFF08PAT\uFF09"),
+      (0, import_react.createElement)("span", {
+        style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)" }
+      }, saved === void 0 ? "\u8BFB\u53D6\u4E2D\u2026" : saved ? "\u5DF2\u8BBE\u7F6E" : "\u672A\u8BBE\u7F6E"),
+      saved === true ? (0, import_react.createElement)("button", {
+        type: "button",
+        "aria-label": "\u6E05\u9664\u4E91\u540C\u6B65\u8BBF\u95EE\u4EE4\u724C",
+        onClick: clear,
+        style: {
+          marginLeft: "auto",
+          padding: 0,
+          border: "none",
+          background: "none",
+          cursor: "pointer",
+          fontSize: 11,
+          color: "var(--dsw-alias-label-secondary, #67748a)",
+          textDecoration: "underline"
+        }
+      }, "\u6E05\u9664") : null
+    ),
+    (0, import_react.createElement)("input", {
+      type: "password",
+      value: draft,
+      autoComplete: "off",
+      "aria-label": "\u4E91\u540C\u6B65\u8BBF\u95EE\u4EE4\u724C",
+      placeholder: saved === true ? "\u5DF2\u8BBE\u7F6E\uFF0C\u8F93\u5165\u65B0\u503C\u53EF\u8986\u76D6" : "ghp_... \u6216 github_pat_...",
+      onChange: (event) => {
+        setDraft(event.target.value);
+      },
+      onBlur: commit,
+      onKeyDown: (event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      },
+      style: {
+        width: "100%",
+        marginTop: 4,
+        padding: "6px 10px",
+        fontSize: 12.5,
+        boxSizing: "border-box",
+        // 半透明中性底色跟随主题：插件页这张卡片在浅色主题下是白底，写死深色兜底会变成黑框
+        // （2026-11-13 用户指出「输入框咋是黑的」）。深色主题下它自然变暗，不需要两套值。
+        background: "rgba(127, 127, 127, 0.07)",
+        border: "1px solid var(--dsw-alias-border-l2, rgba(127, 127, 127, 0.3))",
+        borderRadius: 8,
+        color: "var(--dsw-alias-label-primary, #d8e0ea)",
+        outline: "none"
+      }
+    }),
+    (0, import_react.createElement)("div", {
+      style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 3, lineHeight: 1.45 }
+    }, "\u4EE4\u724C\u5B58\u5728 $DSH_HOME/memory-sync-token \u7684\u72EC\u7ACB\u6587\u4EF6\u91CC\uFF0C\u4E0D\u8FDB\u63D2\u4EF6\u914D\u7F6E\uFF1B\u4E5F\u8BA4\u73AF\u5883\u53D8\u91CF DSH_MEMORY_SYNC_TOKEN\uFF08\u4F18\u5148\uFF09\u3002"),
+    note === "" ? null : (0, import_react.createElement)("div", {
+      style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 2 }
+    }, note)
   );
 }
 function MemorySettingsCard(props) {
@@ -1177,9 +1278,10 @@ function MemorySettingsCard(props) {
         placeholder: "main",
         onCommit: (next) => write(["sync", "branch"], next, "\u4E91\u540C\u6B65\u5206\u652F")
       }),
+      (0, import_react.createElement)(SyncTokenField),
       (0, import_react.createElement)("div", {
-        style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", lineHeight: 1.5 }
-      }, "\u8BBF\u95EE\u4EE4\u724C\uFF08PAT\uFF09\u4E0D\u8FDB\u914D\u7F6E\uFF1A\u8BBE\u7F6E\u73AF\u5883\u53D8\u91CF ", (0, import_react.createElement)("code", null, "DSH_MEMORY_SYNC_TOKEN"), " \u540E\u91CD\u542F\u5B9E\u4F8B\u3002\u5B83\u4E00\u65E6\u843D\u8FDB patch \u6587\u4EF6\u5C31\u4F1A\u8DDF\u7740\u88AB\u590D\u5236\u548C\u5206\u4EAB\u3002")
+        style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", lineHeight: 1.5, marginTop: 2 }
+      }, "\u4EE5\u4E0A\u5B57\u6BB5\u5199\u8FDB profile \u7684 cordis.patch.yml\uFF0C\u6539\u5B8C\u8981\u91CD\u542F\u5B9E\u4F8B\u751F\u6548\u3002")
     ) : null
   );
 }

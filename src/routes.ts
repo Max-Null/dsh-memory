@@ -11,6 +11,7 @@ import { createRequire } from 'node:module'
 import type { MemoryEngine } from './engine.ts'
 import { SELF_DESCRIPTION } from './self.ts'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, renderInjection } from './injection.ts'
+import { clearSyncTokenFile, readSyncTokenFile, writeSyncTokenFile } from './sync-token.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -210,6 +211,25 @@ export function mountMemoryApi(ctx: Context): void {
         : record?.budget === null ? null : DEFAULT_INJECTION_BUDGET
       const summaryChars = typeof record?.summaryChars === 'number' && record.summaryChars > 0 ? record.summaryChars : DEFAULT_SUMMARY_CHARS
       return { self: SELF_DESCRIPTION, ...renderInjection(memory.recallRecords(cwd), budget, summaryChars) }
+    },
+    // ── 云同步 token（2026-11-13）：**不进 profile 配置** —— 落在 $DSH_HOME 下的
+    // 独立文件里（patch 文件会被复制、分享、提交，token 进去等于泄露）。
+    // 面板只回「是否已设置」，从不回显明文。
+    'syncToken': (payload) => {
+      const record = (payload ?? {}) as Record<string, unknown>
+      if (record.action === 'status') return { set: readSyncTokenFile() !== undefined }
+      if (record.action === 'set') {
+        if (typeof record.token !== 'string' || record.token.trim() === '') {
+          throw new MemoryApiError('bad-request', 'missing or invalid "token"')
+        }
+        writeSyncTokenFile(record.token)
+        return { set: true }
+      }
+      if (record.action === 'clear') {
+        clearSyncTokenFile()
+        return { set: false }
+      }
+      throw new MemoryApiError('bad-request', 'action must be status | set | clear')
     },
     // ── 提示词模板库（0.6.0）──
     'prompt.list': async (payload) => {

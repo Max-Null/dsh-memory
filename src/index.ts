@@ -21,6 +21,7 @@ import type { MemoryAnchor } from './anchors.ts'
 import { mountMemoryApi } from './routes.ts'
 import { buildSelfDescription } from './self.ts'
 import { appendEntry, diaryDir, lastWriteAt, pointerLine, readDay, recentDates } from './diary.ts'
+import { readSyncTokenFile } from './sync-token.ts'
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
 
@@ -174,11 +175,14 @@ function syncOn(config: MemoryConfig | undefined): boolean {
 export function resolveSyncConfig(
   raw: Record<string, unknown>,
   env: NodeJS.ProcessEnv = process.env,
+  fileToken?: string,
 ): SyncConfig {
   const mirrorDir = typeof raw.mirrorDir === 'string' && raw.mirrorDir !== ''
     ? raw.mirrorDir
     : join(env.DSH_HOME ?? join(homedir(), '.dsh'), 'memory-sync')
-  const token = env.DSH_MEMORY_SYNC_TOKEN
+  // 环境变量优先于面板设的文件 token：前者是调用方显式注入的那一层。
+  const fromEnv = env.DSH_MEMORY_SYNC_TOKEN
+  const token = fromEnv !== undefined && fromEnv !== '' ? fromEnv : fileToken
   return {
     mirrorDir,
     ...typeof raw.remote === 'string' && raw.remote !== '' ? { remote: raw.remote } : {},
@@ -1196,7 +1200,7 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   // 出错难排查，也容易越权。
   // 缺省不启用：没打开 `memory.sync.enabled` 时这两个工具根本不注册（见上面的
   // `syncEnabled`）；打开之后配置才可能不全——`remote` 为空就只做本地提交。
-  const syncConfig = (): SyncConfig => resolveSyncConfig(syncSettings(config))
+  const syncConfig = (): SyncConfig => resolveSyncConfig(syncSettings(config), process.env, readSyncTokenFile())
 
   if (syncEnabled) {
   ctx.tools.register(defineTool({
