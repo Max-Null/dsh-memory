@@ -148,9 +148,17 @@ DSH 存储层的写入是「读—改—写全量覆盖」，且官方两个后�
 
 把本机记忆镜像到一个 git 仓库，多个环境之间共享同一份记忆。
 
-> **默认不启用。** 不配 `memory.sync.remote` 时，`memory_sync` 与 `memory_conflicts`
-> **根本不注册**（模型看不到，也就不会去调），自述里的工具数也停在 14。只配 `mirrorDir`
-> 不配 `remote` 同样不启用——本地镜像不解决任何问题。这是实验性功能，不该影响别人的安装。
+> **默认不启用，而且是显式开关。** `memory.sync.enabled` 为 `true` 时才注册
+> `memory_sync` 与 `memory_conflicts`——关着时**根本不注册**（模型看不到，也就不会去调），
+> 自述里的工具数停在 14。
+>
+> 判据**不是「配了 remote」**（2026-11-12 改）：填了目标地址不等于打开了功能，那会让一次
+> 配置试验变成意外开机。开关与目标解耦后，还多出一档「只开本地镜像、暂不推送」
+> ——此时 `remote` 留空即可，push 会明确回「未配置远端地址 —— 已完成本地提交」。
+>
+> 开关在插件页「记忆」详情里点（与日记开关同一张卡片），写入
+> `$DSH_HOME/memory-settings.json`，即时生效；`remote` / `mirrorDir` 那几项决定连接目标，
+> 改了要重启。
 
 **为什么是「一条记忆一个文件」。** 整份 `memory.json` 放进 git 会撞：2026-11-06 实测，两端各新增一条记忆后 merge，`git` 报 `CONFLICT (content)`——两条记录挤在同一个插入点，按「取一边」解决会**静默丢掉另一端那条**，而 git 仍报「合并成功」。改成一条一个文件后同一场景是 `Merge made by the 'ort' strategy`，0 冲突。
 
@@ -159,8 +167,9 @@ DSH 存储层的写入是「读—改—写全量覆盖」，且官方两个后�
 ```yaml
 memory:
   sync:
+    enabled: true                    # 总开关；关着两个工具根本不注册
     mirrorDir: ''                    # 缺省 <DSH_HOME>/memory-sync
-    remote: ''                       # https 远端；缺省只做本地提交
+    remote: ''                       # https 远端；留空只做本地提交
     branch: main
     envName: ''                      # 本环境短名，冲突留证时用作后缀
 ```

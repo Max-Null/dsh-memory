@@ -12,6 +12,12 @@ await ctx.plugin(Loader)
 const globalRoot = mkdtempSync(join(tmpdir(), 'dsh-memory-global-'))
 const projectRoot = mkdtempSync(join(tmpdir(), 'dsh-memory-project-'))
 
+// `inject` 声明了 5 个服务，缺任何一个插件都会**静默 pending**：fiber 存在、无 error、
+// 但服务不注册——本脚本 0.3.6 加面板 API 后就因此一直报「memory engine not registered」，
+// 因为它只加载了前三个。这两项是插件页数据通道（HTTP）的前置，验证里给最小面即可。
+ctx.provide('webServer', { register: () => () => {} })
+ctx.provide('webStartup', { trustedHosts: [] })
+
 // Published DSH plugins, resolved by package name (as `cordis.yml` does).
 await ctx.loader.create({ id: 'storage', name: '@deepseek-ai/dsh-storage' })
 await ctx.loader.create({ id: 'system-prompt', name: '@deepseek-ai/dsh-system-prompt' })

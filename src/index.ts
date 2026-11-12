@@ -64,11 +64,24 @@ export const Config = z.object({
   embeddings: z.any(),
   backup: z.any(),
   /**
-   * 云同步配置（2026-11-11）：`{ mirrorDir, remote?, branch?, envName? }`。
+   * 云同步配置（2026-11-11；2026-11-12 改成显式开关）。
    *
-   * 缺省不配 = 不同步。设计见 `docs/设计/2026-11-06-记忆云同步-设计方案.md`。
+   * **用 `enabled` 开关，而不是「配了 remote 就算开」**：与日记同一个模式。语义清楚得多
+   * ——「我打开了这个功能」和「我碰巧填了一个字段」是两件事；而且开启后可以只配一部分
+   * （比如只做本地镜像、暂不推送）。
+   *
+   * `volatile()` 让 `enabled` 能在运行时改（设置面板写 `$DSH_HOME/memory-settings.json`），
+   * 其余字段（remote / branch 等）改了要重启——它们决定的是连接目标，不是临时状态。
+   *
+   * 默认 **关闭**：实验性功能不该影响别人的安装。
    */
-  sync: z.any(),
+  sync: z.object({
+    enabled: z.boolean().default(false),
+    mirrorDir: z.string().default(''),
+    remote: z.string().default(''),
+    branch: z.string().default('main'),
+    envName: z.string().default(''),
+  }).default({ enabled: false }).volatile(),
   /**
    * 日记开关。默认开——这是**功能默认，不是采集默认**。
    *
@@ -112,6 +125,36 @@ function diaryOn(config: MemoryConfig | undefined): boolean {
     ? (raw as { get: () => unknown }).get()
     : raw
   return (unwrapped as { enabled?: unknown } | null)?.enabled !== false
+}
+
+/**
+ * 解包 `config.sync`。
+ *
+ * `config.sync` 经 loader 解析后是 `Volatile<{...}>`（`settings` 侧的解包就是
+ * `isVolatile(v) → v.get()`）——**schema 声明了 `.volatile()`，所以挂载时一定会被包装**，
+ * 直接读字段拿到的是空的。裸对象只在直接调用 `apply` 的场合出现，一并兜住。
+ * 开关与字段读的是同一份解包结果，所以只在这里做一次。
+ * @param config - 插件配置。
+ * @returns 解包后的对象；没配就是空对象（字段全按「缺省」处理）。
+ */
+function syncSettings(config: MemoryConfig | undefined): Record<string, unknown> {
+  const raw = (config as { sync?: unknown } | undefined)?.sync
+  if (raw === undefined || raw === null) return {}
+  const unwrapped = typeof (raw as { get?: unknown }).get === 'function'
+    ? (raw as { get: () => unknown }).get()
+    : raw
+  return (unwrapped ?? {}) as Record<string, unknown>
+}
+
+/**
+ * 读云同步开关。
+ *
+ * 判据是显式 `enabled`，不是「配了 remote」——与日记同一个模式（2026-11-12）。
+ * 与日记相反：**解不出来就是关**（`=== true` 才开）。默认值必须与 schema 的
+ * `default(false)` 一致——实验性功能不能因为读不到开关就自己跑起来。
+ */
+function syncOn(config: MemoryConfig | undefined): boolean {
+  return syncSettings(config).enabled === true
 }
 
 /** 日记提醒的冷却窗口（毫秒）。6 小时是拍出来的第一个值，实测后再调。 */
@@ -601,11 +644,11 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
     text: GUIDANCE,
   })
 
-  // 云同步是**默认关闭**的（2026-11-11）：实验性功能不该影响别人的安装。判据是
-  // 「配了 remote」——只配 mirrorDir 没有意义（本地镜像不解决任何问题）。
-  // 关闭时那两个工具**根本不注册**，而不是注册了再报错：模型看不到就不会去调。
-  const syncRaw = (config?.sync ?? {}) as { remote?: unknown }
-  const syncEnabled = typeof syncRaw.remote === 'string' && syncRaw.remote !== ''
+  // 云同步**默认关闭**（2026-11-11）：实验性功能不该影响别人的安装。判据是显式开关
+  // `enabled`（2026-11-12，与日记一致）——「我打开了这个功能」与「我碰巧填了一个
+  // remote」是两件事，后者会让一次配置试验变成意外开机。关闭时那两个工具**根本不
+  // 注册**，而不是注册了再报错：模型看不到就不会去调。
+  const syncEnabled = syncOn(config)
 
   // 0.3.2：记忆机制自述——常驻注入（不落用户存储），随发版更新。
   // order 49 < recall(50)：机制说明在具体记忆内容之前。
@@ -1121,15 +1164,12 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   // 决定。把 `git pull --rebase && git add && git commit && git push` 那一串交给模型，
   // 出错难排查，也容易越权。
   //
-  // 缺省不启用：没配 `memory.sync` 时这两个工具直接报「未配置」，而不是默默什么都不做——
-  // 静默不动作比报错更坏。
+  // 缺省不启用：没打开 `memory.sync.enabled` 时这两个工具根本不注册（见上面的
+  // `syncEnabled`）；打开之后配置才可能不全——`remote` 为空就只做本地提交。
   const syncConfig = (): SyncConfig => {
-    const raw = (config?.sync ?? {}) as {
-      mirrorDir?: unknown
-      remote?: unknown
-      branch?: unknown
-      envName?: unknown
-    }
+    // 走 {@link syncSettings} 解包：`.volatile()` 包装后直接读字段是空的，
+    // 「开关打开了、配置读不出来」正是半成品状态会踩的坑。
+    const raw = syncSettings(config)
     const mirrorDir = typeof raw.mirrorDir === 'string' && raw.mirrorDir !== ''
       ? raw.mirrorDir
       : join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'memory-sync')

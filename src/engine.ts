@@ -510,9 +510,11 @@ export interface MemoryConfig {
    */
   backup?: MemoryBackupConfig
   /**
-   * 云同步配置（2026-11-11）：`{ mirrorDir, remote?, branch?, envName? }`。
+   * 云同步配置（2026-11-11；2026-11-12 改成显式开关）：
+   * `{ enabled, mirrorDir, remote?, branch?, envName? }`。
    *
-   * 缺省不配 = 不同步。设计见 `docs/设计/2026-11-06-记忆云同步-设计方案.md`。
+   * **开关是 `enabled`，不是「配了 remote 就算开」**——与日记同一个模式。缺省不配 = 不同步。
+   * 设计见 `docs/设计/2026-11-06-记忆云同步-设计方案.md`。
    */
   sync?: unknown
   /**

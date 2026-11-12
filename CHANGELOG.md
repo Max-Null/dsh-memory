@@ -4,6 +4,20 @@
 
 > **关于 git tag**：0.7.1 / 0.7.2 / 0.7.3 / 0.8.0 / 0.9.0 / 0.9.1 六个版本**没有对应的 git tag**。它们的改动在仓库里是一次性提交的（`42b08ab`「feat(memory): 0.7.1–0.9.2 累积改动」，21 文件 / 1482 行），git 历史中不存在这些版本各自的代码状态——给它们各打一个 tag 只能全部指向同一个 commit，那是假精确，所以不补。这六个版本在 npm 上都有记录（`npm view @max-null/dsh-memory versions`）；GitHub 的 Release 列表会跳过它们，缺口即由此而来。
 
+## [0.22.2] - 2026-11-12
+
+### 变更
+
+**云同步的启用判据从「配了 remote」改成显式 `enabled` 开关**，与日记一致。
+
+「我打开了这个功能」和「我碰巧填了一个字段」是两件事：前者是意图，后者常常只是一次配置试验，而旧判据会让试验变成意外开机。开关与目标解耦后还多出一档「只开本地镜像、暂不推送」——`enabled: true` + `remote` 留空即可，push 会回「未配置远端地址 —— 已完成本地提交」。
+
+**升级后要做的一件事**：在用云同步的话，在 `memory.sync` 里补 `enabled: true`，否则那两个工具会消失（不报错、不丢数据，只是不注册）。也可以直接在插件页「记忆」详情里打开「云同步」开关——卡片与日记开关合并成同一张，写入 `$DSH_HOME/memory-settings.json`，即时生效。
+
+实现上 `Config.sync` 从 `z.any()` 收成结构化 schema 并标 `.volatile()`，开关才可能在面板里改。**这带来一个必须踩中才算对的坑**：`volatile()` 会让 cordis 把字段包成 `Volatile<{...}>`，`config.sync.enabled` 直接读是 `undefined`——「schema 改了、开关加了、工具还是不出现」就是这么发生的。新增 `syncSettings()` 统一解包，`syncOn()` 与 `syncConfig()` 都走它，别再各写一遍 `typeof get === 'function'`。
+
+测试：`test/sync-default-off.spec.ts` 从 3 条扩到 5 条，语义按新判据重排——不配 `sync` 不注册、**配了 remote 但没开 `enabled` 不注册**（旧判据的反转）、`enabled: false` + remote 也不注册、`enabled: true` + remote 注册且自述变 16、`enabled: true` 无 remote 也注册。做了负向控制：把 `syncOn` 写成不解包时，后两条立刻变红。
+
 ## [0.22.1] - 2026-11-11
 
 ### 修正

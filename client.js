@@ -1031,19 +1031,8 @@ function SettingsMemoryView(props) {
     cwd: currentSessionCwd(props.ctx)
   });
 }
-function DiarySettingsCard(props) {
-  const { form } = props;
-  const [enabled, setEnabled] = (0, import_react.useState)(true);
-  (0, import_react.useEffect)(() => {
-    const read = () => {
-      setEnabled(form.getSnapshot()?.value?.diary?.enabled ?? true);
-    };
-    read();
-    const off = form.subscribe(read);
-    return () => {
-      if (typeof off === "function") off();
-    };
-  }, [form]);
+function SwitchRow(props) {
+  const { label, hint, enabled, ariaLabel, onToggle, divided } = props;
   return (0, import_react.createElement)(
     "div",
     {
@@ -1053,18 +1042,14 @@ function DiarySettingsCard(props) {
         justifyContent: "space-between",
         gap: 12,
         padding: "12px 0",
-        borderTop: "1px solid var(--dsw-alias-border-l2, #1e2836)"
+        ...divided ? { borderTop: "1px solid var(--dsw-alias-border-l2, #1e2836)" } : {}
       }
     },
     (0, import_react.createElement)(
       "div",
       { style: { minWidth: 0 } },
-      (0, import_react.createElement)("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d8e0ea)" } }, "\u65E5\u8BB0"),
-      (0, import_react.createElement)(
-        "div",
-        { style: { fontSize: 11.5, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 3, lineHeight: 1.5 } },
-        "\u672C\u673A\u5199\u65E5\u8BB0\u3002\u5173\u6389\u540E\u65E5\u8BB0\u5DE5\u5177\u62D2\u7EDD\u6267\u884C\u3001\u4E0D\u518D\u6CE8\u5165\u6307\u9488\uFF1B\u5DF2\u6709\u65E5\u8BB0\u6587\u4EF6\u539F\u6837\u4FDD\u7559\uFF0C\u4E0D\u4F1A\u88AB\u5220\u3002"
-      )
+      (0, import_react.createElement)("div", { style: { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d8e0ea)" } }, label),
+      (0, import_react.createElement)("div", { style: { fontSize: 11.5, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 3, lineHeight: 1.5 } }, hint)
     ),
     (0, import_react.createElement)(
       "button",
@@ -1072,17 +1057,8 @@ function DiarySettingsCard(props) {
         type: "button",
         role: "switch",
         "aria-checked": enabled,
-        "aria-label": "\u65E5\u8BB0\u5F00\u5173",
-        onClick: () => {
-          try {
-            const pending = form.mutate([{ op: "set", path: ["diary", "enabled"], value: !enabled }]);
-            void Promise.resolve(pending).catch((error) => {
-              console.warn("dsh-memory: \u65E5\u8BB0\u5F00\u5173\u5199\u5165\u5931\u8D25", error);
-            });
-          } catch (error) {
-            console.warn("dsh-memory: \u65E5\u8BB0\u5F00\u5173\u5199\u5165\u629B\u9519", error);
-          }
-        },
+        "aria-label": ariaLabel,
+        onClick: onToggle,
         style: {
           flex: "none",
           width: 40,
@@ -1108,6 +1084,52 @@ function DiarySettingsCard(props) {
         }
       })
     )
+  );
+}
+function MemorySettingsCard(props) {
+  const { form } = props;
+  const [diary, setDiary] = (0, import_react.useState)(true);
+  const [sync, setSync] = (0, import_react.useState)(false);
+  (0, import_react.useEffect)(() => {
+    const read = () => {
+      setDiary(form.getSnapshot()?.value?.diary?.enabled ?? true);
+      setSync(form.getSnapshot()?.value?.sync?.enabled ?? false);
+    };
+    read();
+    const off = form.subscribe(read);
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [form]);
+  const write = (path, value, what) => {
+    try {
+      const pending = form.mutate([{ op: "set", path, value }]);
+      void Promise.resolve(pending).catch((error) => {
+        console.warn(`dsh-memory: ${what}\u5F00\u5173\u5199\u5165\u5931\u8D25`, error);
+      });
+    } catch (error) {
+      console.warn(`dsh-memory: ${what}\u5F00\u5173\u5199\u5165\u629B\u9519`, error);
+    }
+  };
+  return (0, import_react.createElement)(
+    "div",
+    null,
+    (0, import_react.createElement)(SwitchRow, {
+      label: "\u65E5\u8BB0",
+      hint: "\u672C\u673A\u5199\u65E5\u8BB0\u3002\u5173\u6389\u540E\u65E5\u8BB0\u5DE5\u5177\u62D2\u7EDD\u6267\u884C\u3001\u4E0D\u518D\u6CE8\u5165\u6307\u9488\uFF1B\u5DF2\u6709\u65E5\u8BB0\u6587\u4EF6\u539F\u6837\u4FDD\u7559\uFF0C\u4E0D\u4F1A\u88AB\u5220\u3002",
+      enabled: diary,
+      ariaLabel: "\u65E5\u8BB0\u5F00\u5173",
+      onToggle: () => write(["diary", "enabled"], !diary, "\u65E5\u8BB0"),
+      divided: false
+    }),
+    (0, import_react.createElement)(SwitchRow, {
+      label: "\u4E91\u540C\u6B65",
+      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u955C\u50CF\u5230\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u591A\u4E2A\u73AF\u5883\u5171\u7528\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6 memory_sync \u4E0E memory_conflicts \u6839\u672C\u4E0D\u6CE8\u518C\u3002\u6253\u5F00\u540E\u8FD8\u9700\u8981\u5728\u63D2\u4EF6\u914D\u7F6E\u91CC\u586B sync.remote\uFF08\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF09\uFF1B\u90A3\u51E0\u9879\u51B3\u5B9A\u8FDE\u63A5\u76EE\u6807\uFF0C\u6539\u4E86\u8981\u91CD\u542F\u3002",
+      enabled: sync,
+      ariaLabel: "\u4E91\u540C\u6B65\u5F00\u5173",
+      onToggle: () => write(["sync", "enabled"], !sync, "\u4E91\u540C\u6B65"),
+      divided: true
+    })
   );
 }
 function apply(ctx) {
@@ -1140,10 +1162,10 @@ function apply(ctx) {
         name: "plugins.bundle.config",
         key: "@max-null/dsh-memory",
         inject: () => ({})
-      }, () => (0, import_react.createElement)(DiarySettingsCard, { form: settingsForm })));
+      }, () => (0, import_react.createElement)(MemorySettingsCard, { form: settingsForm })));
     }
   } catch (error) {
-    console.warn("dsh-memory: \u65E5\u8BB0\u914D\u7F6E\u5361\u7247\u672A\u6CE8\u518C\uFF08\u4E0D\u5F71\u54CD\u8BB0\u5FC6\u4E0E\u65E5\u8BB0\u5DE5\u5177\uFF09", error);
+    console.warn("dsh-memory: \u8BBE\u7F6E\u5361\u7247\u672A\u6CE8\u518C\uFF08\u4E0D\u5F71\u54CD\u8BB0\u5FC6\u4E0E\u65E5\u8BB0\u5DE5\u5177\uFF09", error);
   }
   const root = ctx;
   if (root.inject === void 0) return;
