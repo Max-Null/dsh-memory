@@ -12,7 +12,7 @@
 
 「我打开了这个功能」和「我碰巧填了一个字段」是两件事：前者是意图，后者常常只是一次配置试验，而旧判据会让试验变成意外开机。开关与目标解耦后还多出一档「只开本地镜像、暂不推送」——`enabled: true` + `remote` 留空即可，push 会回「未配置远端地址 —— 已完成本地提交」。
 
-**升级后要做的一件事**：在用云同步的话，在 `memory.sync` 里补 `enabled: true`，否则那两个工具会消失（不报错、不丢数据，只是不注册）。也可以直接在插件页「记忆」详情里打开「云同步」开关——卡片与日记开关合并成同一张，写入 `$DSH_HOME/memory-settings.json`，即时生效。
+**升级后要做的一件事**：在用云同步的话，在 `memory.sync` 里补 `enabled: true`，否则那两个工具会消失（不报错、不丢数据，只是不注册）。也可以直接在插件页「记忆」详情里打开「云同步」开关——卡片与日记开关合并成同一张，值写进 **profile 的 `cordis.patch.yml`**；该 profile 开 `patchReload: live` 时即时生效，否则重启实例后生效（2026-11-12 在 dev 实例里实测确认：关掉热重载时点开关，工具不会立刻出现）。
 
 实现上 `Config.sync` 从 `z.any()` 收成结构化 schema 并标 `.volatile()`，开关才可能在面板里改。**这带来一个必须踩中才算对的坑**：`volatile()` 会让 cordis 把字段包成 `Volatile<{...}>`，`config.sync.enabled` 直接读是 `undefined`——「schema 改了、开关加了、工具还是不出现」就是这么发生的。新增 `syncSettings()` 统一解包，`syncOn()` 与 `syncConfig()` 都走它，别再各写一遍 `typeof get === 'function'`。
 

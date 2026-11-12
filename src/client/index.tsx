@@ -1117,7 +1117,7 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
     }),
     createElement(SwitchRow, {
       label: '云同步',
-      hint: '把本机记忆镜像到一个 git 仓库，多个环境共用一份记忆。关着时 memory_sync 与 memory_conflicts 根本不注册。打开后还需要在插件配置里填 sync.remote（留空 = 只做本地镜像与提交）；那几项决定连接目标，改了要重启。',
+      hint: '把本机记忆镜像到一个 git 仓库，多个环境共用一份记忆。关着时 memory_sync 与 memory_conflicts 根本不注册。打开后还需要在插件配置里填 sync.remote（留空 = 只做本地镜像与提交）。开关写入 profile 的 cordis.patch.yml：profile 开 patchReload: live 时即时生效，否则重启实例后生效。',
       enabled: sync,
       ariaLabel: '云同步开关',
       onToggle: () => write(['sync', 'enabled'], !sync, '云同步'),

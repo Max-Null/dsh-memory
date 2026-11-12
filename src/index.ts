@@ -70,7 +70,8 @@ export const Config = z.object({
    * ——「我打开了这个功能」和「我碰巧填了一个字段」是两件事；而且开启后可以只配一部分
    * （比如只做本地镜像、暂不推送）。
    *
-   * `volatile()` 让 `enabled` 能在运行时改（设置面板写 `$DSH_HOME/memory-settings.json`），
+   * `volatile()` 让 `enabled` 能在运行时改：设置面板把值写进 profile 的
+   * `cordis.patch.yml`，是否即时生效取决于该 profile 的 `patchReload`（`live` 才热重载）。
    * 其余字段（remote / branch 等）改了要重启——它们决定的是连接目标，不是临时状态。
    *
    * 默认 **关闭**：实验性功能不该影响别人的安装。
