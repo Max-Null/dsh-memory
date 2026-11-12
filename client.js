@@ -104,51 +104,17 @@ function brainIcon() {
     strokeLinejoin: "round"
   }, BRAIN_PATHS.map((d, index) => (0, import_react.createElement)("path", { key: index, d })));
 }
-var SETTINGS_NAV_MARKER = "data-dsh-memory-settings-nav";
-var BRAIN_MASK_SVG = `%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z'/%3E%3Cpath d='M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z'/%3E%3C/svg%3E`;
-var NAV_ICON_CSS = `
-[data-dsh-memory-settings-nav] > svg:first-child { display: none; }
-[data-dsh-memory-settings-nav]::before {
-  content: '';
-  flex: none;
-  width: 16px;
-  height: 16px;
-  background: currentColor;
-  -webkit-mask: url("data:image/svg+xml,${BRAIN_MASK_SVG}") center / contain no-repeat;
-  mask: url("data:image/svg+xml,${BRAIN_MASK_SVG}") center / contain no-repeat;
-}
-`;
-var navCssInjected = false;
-function injectNavCss() {
-  if (navCssInjected || typeof document === "undefined") return;
-  navCssInjected = true;
-  const style = document.createElement("style");
-  style.setAttribute("data-plugin", "@max-null/dsh-memory");
-  style.textContent = NAV_ICON_CSS;
-  document.head.append(style);
-}
-function registerSettingsNavIcon(label) {
-  let disposed = false;
-  const sync = () => {
-    if (disposed) return;
-    const currentLabel = label().trim();
-    const buttons = document.querySelectorAll('[role="dialog"] nav button');
-    for (const button of buttons) {
-      const matches = currentLabel.length > 0 && button.textContent?.trim() === currentLabel;
-      if (matches) button.setAttribute(SETTINGS_NAV_MARKER, "");
-      else button.removeAttribute(SETTINGS_NAV_MARKER);
-    }
-  };
-  sync();
-  const observer = new MutationObserver(sync);
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-  return () => {
-    disposed = true;
-    observer.disconnect();
-    document.querySelectorAll(`[${SETTINGS_NAV_MARKER}]`).forEach((element) => {
-      element.removeAttribute(SETTINGS_NAV_MARKER);
-    });
-  };
+function navIcon(size) {
+  return (0, import_react.createElement)("svg", {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2,
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, BRAIN_PATHS.map((d, index) => (0, import_react.createElement)("path", { key: index, d })));
 }
 var STRINGS = {
   zh: {
@@ -1124,7 +1090,7 @@ function MemorySettingsCard(props) {
     }),
     (0, import_react.createElement)(SwitchRow, {
       label: "\u4E91\u540C\u6B65",
-      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u955C\u50CF\u5230\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u591A\u4E2A\u73AF\u5883\u5171\u7528\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6 memory_sync \u4E0E memory_conflicts \u6839\u672C\u4E0D\u6CE8\u518C\u3002\u6253\u5F00\u540E\u8FD8\u9700\u8981\u5728\u63D2\u4EF6\u914D\u7F6E\u91CC\u586B sync.remote\uFF08\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF09\uFF1B\u90A3\u51E0\u9879\u51B3\u5B9A\u8FDE\u63A5\u76EE\u6807\uFF0C\u6539\u4E86\u8981\u91CD\u542F\u3002",
+      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u955C\u50CF\u5230\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u591A\u4E2A\u73AF\u5883\u5171\u7528\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6 memory_sync \u4E0E memory_conflicts \u6839\u672C\u4E0D\u6CE8\u518C\u3002\u6253\u5F00\u540E\u8FD8\u9700\u8981\u5728\u63D2\u4EF6\u914D\u7F6E\u91CC\u586B sync.remote\uFF08\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF09\u3002\u5F00\u5173\u5199\u5165 profile \u7684 cordis.patch.yml\uFF1Aprofile \u5F00 patchReload: live \u65F6\u5373\u65F6\u751F\u6548\uFF0C\u5426\u5219\u91CD\u542F\u5B9E\u4F8B\u540E\u751F\u6548\u3002",
       enabled: sync,
       ariaLabel: "\u4E91\u540C\u6B65\u5F00\u5173",
       onToggle: () => write(["sync", "enabled"], !sync, "\u4E91\u540C\u6B65"),
@@ -1142,7 +1108,6 @@ function apply(ctx) {
   });
   const slots = ctx.slots;
   if (slots?.inject !== void 0) {
-    injectNavCss();
     slots.inject("settings.section", () => slots.register({
       name: "settings.section",
       id: "dsh-memory",
@@ -1152,7 +1117,12 @@ function apply(ctx) {
     }, () => (0, import_react.createElement)(SettingsMemoryView, {
       ctx
     })));
-    face.effect?.(() => registerSettingsNavIcon(() => STRINGS[localeId].tabMemory), "dsh-memory: settings navigation icon");
+    slots.inject("settings.section.icon", () => slots.register({
+      name: "settings.section.icon",
+      id: "dsh-memory",
+      order: 60,
+      label: () => STRINGS[localeId].tabMemory
+    }, (props) => navIcon(props?.size ?? 16)));
   }
   try {
     const configForms = face.get?.("configForms");
