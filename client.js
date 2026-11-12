@@ -1052,14 +1052,67 @@ function SwitchRow(props) {
     )
   );
 }
+function SyncField(props) {
+  const { label, hint, value, placeholder, ariaLabel, onCommit } = props;
+  const [draft, setDraft] = (0, import_react.useState)(value);
+  (0, import_react.useEffect)(() => {
+    setDraft(value);
+  }, [value]);
+  const commit = () => {
+    const next = draft.trim();
+    if (next !== value) onCommit(next);
+  };
+  return (0, import_react.createElement)(
+    "div",
+    { style: { padding: "8px 0 6px" } },
+    (0, import_react.createElement)("div", {
+      style: { fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-label-primary, #d8e0ea)" }
+    }, label),
+    (0, import_react.createElement)("input", {
+      type: "text",
+      value: draft,
+      placeholder,
+      "aria-label": ariaLabel,
+      onChange: (event) => {
+        setDraft(event.target.value);
+      },
+      onBlur: commit,
+      onKeyDown: (event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      },
+      style: {
+        width: "100%",
+        marginTop: 4,
+        padding: "6px 10px",
+        fontSize: 12.5,
+        boxSizing: "border-box",
+        background: "var(--dsw-alias-bg-layer-1, #0f141d)",
+        border: "1px solid var(--dsw-alias-border-l2, #1e2836)",
+        borderRadius: 8,
+        color: "var(--dsw-alias-label-primary, #d8e0ea)",
+        outline: "none"
+      }
+    }),
+    (0, import_react.createElement)("div", {
+      style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 3, lineHeight: 1.45 }
+    }, hint)
+  );
+}
 function MemorySettingsCard(props) {
   const { form } = props;
   const [diary, setDiary] = (0, import_react.useState)(true);
   const [sync, setSync] = (0, import_react.useState)(false);
+  const [remote, setRemote] = (0, import_react.useState)("");
+  const [mirrorDir, setMirrorDir] = (0, import_react.useState)("");
+  const [branch, setBranch] = (0, import_react.useState)("");
   (0, import_react.useEffect)(() => {
     const read = () => {
-      setDiary(form.getSnapshot()?.value?.diary?.enabled ?? true);
-      setSync(form.getSnapshot()?.value?.sync?.enabled ?? false);
+      const value = form.getSnapshot()?.value;
+      setDiary(value?.diary?.enabled ?? true);
+      setSync(value?.sync?.enabled ?? false);
+      setRemote(value?.sync?.remote ?? "");
+      setMirrorDir(value?.sync?.mirrorDir ?? "");
+      setBranch(value?.sync?.branch ?? "");
     };
     read();
     const off = form.subscribe(read);
@@ -1071,10 +1124,10 @@ function MemorySettingsCard(props) {
     try {
       const pending = form.mutate([{ op: "set", path, value }]);
       void Promise.resolve(pending).catch((error) => {
-        console.warn(`dsh-memory: ${what}\u5F00\u5173\u5199\u5165\u5931\u8D25`, error);
+        console.warn(`dsh-memory: ${what}\u5199\u5165\u5931\u8D25`, error);
       });
     } catch (error) {
-      console.warn(`dsh-memory: ${what}\u5F00\u5173\u5199\u5165\u629B\u9519`, error);
+      console.warn(`dsh-memory: ${what}\u5199\u5165\u629B\u9519`, error);
     }
   };
   return (0, import_react.createElement)(
@@ -1085,17 +1138,49 @@ function MemorySettingsCard(props) {
       hint: "\u672C\u673A\u5199\u65E5\u8BB0\u3002\u5173\u6389\u540E\u65E5\u8BB0\u5DE5\u5177\u62D2\u7EDD\u6267\u884C\u3001\u4E0D\u518D\u6CE8\u5165\u6307\u9488\uFF1B\u5DF2\u6709\u65E5\u8BB0\u6587\u4EF6\u539F\u6837\u4FDD\u7559\uFF0C\u4E0D\u4F1A\u88AB\u5220\u3002",
       enabled: diary,
       ariaLabel: "\u65E5\u8BB0\u5F00\u5173",
-      onToggle: () => write(["diary", "enabled"], !diary, "\u65E5\u8BB0"),
+      onToggle: () => write(["diary", "enabled"], !diary, "\u65E5\u8BB0\u5F00\u5173"),
       divided: false
     }),
     (0, import_react.createElement)(SwitchRow, {
       label: "\u4E91\u540C\u6B65",
-      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u955C\u50CF\u5230\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u591A\u4E2A\u73AF\u5883\u5171\u7528\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6 memory_sync \u4E0E memory_conflicts \u6839\u672C\u4E0D\u6CE8\u518C\u3002\u6253\u5F00\u540E\u8FD8\u9700\u8981\u5728\u63D2\u4EF6\u914D\u7F6E\u91CC\u586B sync.remote\uFF08\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF09\u3002\u5F00\u5173\u5199\u5165 profile \u7684 cordis.patch.yml\uFF1Aprofile \u5F00 patchReload: live \u65F6\u5373\u65F6\u751F\u6548\uFF0C\u5426\u5219\u91CD\u542F\u5B9E\u4F8B\u540E\u751F\u6548\u3002",
+      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u955C\u50CF\u5230\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u591A\u4E2A\u73AF\u5883\u5171\u7528\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6 memory_sync \u4E0E memory_conflicts \u6839\u672C\u4E0D\u6CE8\u518C\u3002\u6253\u5F00\u540E\u5728\u4E0B\u65B9\u586B\u8FDC\u7AEF\u5730\u5740\uFF08\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF09\u3002\u5F00\u5173\u4E0E\u8FDE\u63A5\u914D\u7F6E\u90FD\u5199\u8FDB profile \u7684 cordis.patch.yml\uFF1Aprofile \u5F00 patchReload: live \u65F6\u5373\u65F6\u751F\u6548\uFF0C\u5426\u5219\u91CD\u542F\u5B9E\u4F8B\u540E\u751F\u6548\u3002",
       enabled: sync,
       ariaLabel: "\u4E91\u540C\u6B65\u5F00\u5173",
-      onToggle: () => write(["sync", "enabled"], !sync, "\u4E91\u540C\u6B65"),
+      onToggle: () => write(["sync", "enabled"], !sync, "\u4E91\u540C\u6B65\u5F00\u5173"),
       divided: true
-    })
+    }),
+    // 连接配置只在开关打开时出现：关着的时候填地址没有任何意义，只会让人以为在生效。
+    sync ? (0, import_react.createElement)(
+      "div",
+      { style: { padding: "2px 0 10px" } },
+      (0, import_react.createElement)(SyncField, {
+        label: "\u8FDC\u7AEF\u5730\u5740",
+        hint: "https \u5730\u5740\u3002\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF0C\u4E0D\u5411\u4EFB\u4F55\u8FDC\u7AEF\u63A8\u9001\u3002",
+        ariaLabel: "\u4E91\u540C\u6B65\u8FDC\u7AEF\u5730\u5740",
+        value: remote,
+        placeholder: "https://github.com/<\u4F60>/<\u4ED3\u5E93>.git",
+        onCommit: (next) => write(["sync", "remote"], next, "\u4E91\u540C\u6B65\u8FDC\u7AEF\u5730\u5740")
+      }),
+      (0, import_react.createElement)(SyncField, {
+        label: "\u955C\u50CF\u76EE\u5F55",
+        hint: "\u672C\u673A\u5B58\u653E\u955C\u50CF\u4ED3\u5E93\u7684\u4F4D\u7F6E\u3002\u7559\u7A7A = <DSH_HOME>/memory-sync\u3002",
+        ariaLabel: "\u4E91\u540C\u6B65\u955C\u50CF\u76EE\u5F55",
+        value: mirrorDir,
+        placeholder: "<DSH_HOME>/memory-sync",
+        onCommit: (next) => write(["sync", "mirrorDir"], next, "\u4E91\u540C\u6B65\u955C\u50CF\u76EE\u5F55")
+      }),
+      (0, import_react.createElement)(SyncField, {
+        label: "\u5206\u652F",
+        hint: "\u63A8\u9001/\u62C9\u53D6\u7528\u7684\u5206\u652F\u3002\u7559\u7A7A = main\u3002",
+        ariaLabel: "\u4E91\u540C\u6B65\u5206\u652F",
+        value: branch,
+        placeholder: "main",
+        onCommit: (next) => write(["sync", "branch"], next, "\u4E91\u540C\u6B65\u5206\u652F")
+      }),
+      (0, import_react.createElement)("div", {
+        style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", lineHeight: 1.5 }
+      }, "\u8BBF\u95EE\u4EE4\u724C\uFF08PAT\uFF09\u4E0D\u8FDB\u914D\u7F6E\uFF1A\u8BBE\u7F6E\u73AF\u5883\u53D8\u91CF ", (0, import_react.createElement)("code", null, "DSH_MEMORY_SYNC_TOKEN"), " \u540E\u91CD\u542F\u5B9E\u4F8B\u3002\u5B83\u4E00\u65E6\u843D\u8FDB patch \u6587\u4EF6\u5C31\u4F1A\u8DDF\u7740\u88AB\u590D\u5236\u548C\u5206\u4EAB\u3002")
+    ) : null
   );
 }
 function apply(ctx) {

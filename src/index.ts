@@ -158,6 +158,36 @@ function syncOn(config: MemoryConfig | undefined): boolean {
   return syncSettings(config).enabled === true
 }
 
+/**
+ * 组装云同步的运行配置。
+ *
+ * 拆成纯函数是为了可测：`apply` 里的闭包拿不到，而这里每条兜底都值得断言
+ * （缺 mirrorDir 回退、空字符串视同没配、token 只从环境变量来）。
+ *
+ * **token 只从环境变量 `DSH_MEMORY_SYNC_TOKEN` 取**：它一旦落进 profile 配置，
+ * 就会跟着 patch 文件被复制、分享、提交，而 README 承诺的是「token 不写进配置」。
+ * 2026-11-13：这条链路此前是断的——`SyncConfig.token` 与 `authFor()` 都在，
+ * 但没人读环境变量，于是私有仓库必然 401。
+ * @param raw - 解包后的 `sync` 设置。
+ * @param env - 环境变量来源（测试注入用，缺省 `process.env`）。
+ */
+export function resolveSyncConfig(
+  raw: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
+): SyncConfig {
+  const mirrorDir = typeof raw.mirrorDir === 'string' && raw.mirrorDir !== ''
+    ? raw.mirrorDir
+    : join(env.DSH_HOME ?? join(homedir(), '.dsh'), 'memory-sync')
+  const token = env.DSH_MEMORY_SYNC_TOKEN
+  return {
+    mirrorDir,
+    ...typeof raw.remote === 'string' && raw.remote !== '' ? { remote: raw.remote } : {},
+    ...typeof raw.branch === 'string' && raw.branch !== '' ? { branch: raw.branch } : {},
+    ...typeof raw.envName === 'string' && raw.envName !== '' ? { envName: raw.envName } : {},
+    ...token === undefined || token === '' ? {} : { token },
+  }
+}
+
 /** 日记提醒的冷却窗口（毫秒）。6 小时是拍出来的第一个值，实测后再调。 */
 const DIARY_REMIND_MS = 6 * 60 * 60 * 1000
 
@@ -1164,23 +1194,9 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   // **不向模型暴露 git**：模型只说「同步一下 / 看看状态」，具体 add/commit/push 由插件
   // 决定。把 `git pull --rebase && git add && git commit && git push` 那一串交给模型，
   // 出错难排查，也容易越权。
-  //
   // 缺省不启用：没打开 `memory.sync.enabled` 时这两个工具根本不注册（见上面的
   // `syncEnabled`）；打开之后配置才可能不全——`remote` 为空就只做本地提交。
-  const syncConfig = (): SyncConfig => {
-    // 走 {@link syncSettings} 解包：`.volatile()` 包装后直接读字段是空的，
-    // 「开关打开了、配置读不出来」正是半成品状态会踩的坑。
-    const raw = syncSettings(config)
-    const mirrorDir = typeof raw.mirrorDir === 'string' && raw.mirrorDir !== ''
-      ? raw.mirrorDir
-      : join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'memory-sync')
-    return {
-      mirrorDir,
-      ...typeof raw.remote === 'string' && raw.remote !== '' ? { remote: raw.remote } : {},
-      ...typeof raw.branch === 'string' && raw.branch !== '' ? { branch: raw.branch } : {},
-      ...typeof raw.envName === 'string' && raw.envName !== '' ? { envName: raw.envName } : {},
-    }
-  }
+  const syncConfig = (): SyncConfig => resolveSyncConfig(syncSettings(config))
 
   if (syncEnabled) {
   ctx.tools.register(defineTool({

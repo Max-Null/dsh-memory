@@ -979,7 +979,13 @@ interface LocaleAwareContext {
  * 的路径操作。
  */
 interface ConfigFormLike {
-  getSnapshot(): { value?: { diary?: { enabled?: boolean }, sync?: { enabled?: boolean } } }
+  getSnapshot(): {
+    value?: {
+      diary?: { enabled?: boolean }
+      /** 连接目标：面板里可改，值写进 profile 的 patch。 */
+      sync?: { enabled?: boolean, remote?: string, mirrorDir?: string, branch?: string }
+    }
+  }
   subscribe(listener: () => void): unknown
   mutate(ops: Array<{ op: 'set', path: string[], value: unknown }>): unknown
 }
@@ -1027,7 +1033,60 @@ function SwitchRow(props: {
 }
 
 /**
- * 插件页「记忆」详情里的配置卡片（0.19.0 起是日记开关，2026-11-12 加上云同步开关）。
+ * 云同步的连接配置：一个文本框，失焦或回车时提交。
+ *
+ * 提交时机选**失焦**而不是每次按键：每次按键都 `mutate` 会连续写 patch 文件，
+ * 而且中途的半截地址（`https://github.co`）不该落盘。
+ *
+ * 这些字段（remote / mirrorDir / branch）决定的是**连接目标**，不属于「临时状态」，
+ * 所以和 `enabled` 不同——改完要重启实例才真正生效（文案里写明了）。
+ */
+function SyncField(props: {
+  label: string
+  hint: string
+  value: string
+  placeholder: string
+  ariaLabel: string
+  onCommit: (value: string) => void
+}): ReactNode {
+  const { label, hint, value, placeholder, ariaLabel, onCommit } = props
+  const [draft, setDraft] = useState(value)
+  // 外部（配置快照）变化时同步回草稿，否则面板刷新后显示的是旧值。
+  useEffect(() => { setDraft(value) }, [value])
+  const commit = (): void => {
+    const next = draft.trim()
+    if (next !== value) onCommit(next)
+  }
+  return createElement('div', { style: { padding: '8px 0 6px' } },
+    createElement('div', {
+      style: { fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-primary, #d8e0ea)' },
+    }, label),
+    createElement('input', {
+      type: 'text',
+      value: draft,
+      placeholder,
+      'aria-label': ariaLabel,
+      onChange: (event: { target: { value: string } }) => { setDraft(event.target.value) },
+      onBlur: commit,
+      onKeyDown: (event: { key: string, currentTarget: { blur: () => void } }) => {
+        if (event.key === 'Enter') event.currentTarget.blur()
+      },
+      style: {
+        width: '100%', marginTop: 4, padding: '6px 10px', fontSize: 12.5, boxSizing: 'border-box',
+        background: 'var(--dsw-alias-bg-layer-1, #0f141d)',
+        border: '1px solid var(--dsw-alias-border-l2, #1e2836)', borderRadius: 8,
+        color: 'var(--dsw-alias-label-primary, #d8e0ea)', outline: 'none',
+      },
+    }),
+    createElement('div', {
+      style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', marginTop: 3, lineHeight: 1.45 },
+    }, hint),
+  )
+}
+
+
+/**
+ * 插件页「记忆」详情里的配置卡片（0.19.0 起是日记开关，2026-11-12 加云同步开关与连接配置）。
  *
  * **为什么要有它**：`Config` schema 只负责让 Host 侧认得这些字段，
  * `@deepseek-ai/dsh-settings` 的 README 写明自动表单 `autoGenerate`「目前没有已发布的
@@ -1041,10 +1100,17 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
   const { form } = props
   const [diary, setDiary] = useState(true)
   const [sync, setSync] = useState(false)
+  const [remote, setRemote] = useState('')
+  const [mirrorDir, setMirrorDir] = useState('')
+  const [branch, setBranch] = useState('')
   useEffect(() => {
     const read = (): void => {
-      setDiary(form.getSnapshot()?.value?.diary?.enabled ?? true)
-      setSync(form.getSnapshot()?.value?.sync?.enabled ?? false)
+      const value = form.getSnapshot()?.value
+      setDiary(value?.diary?.enabled ?? true)
+      setSync(value?.sync?.enabled ?? false)
+      setRemote(value?.sync?.remote ?? '')
+      setMirrorDir(value?.sync?.mirrorDir ?? '')
+      setBranch(value?.sync?.branch ?? '')
     }
     read()
     const off = form.subscribe(read)
@@ -1054,16 +1120,16 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
     }
   }, [form])
 
-  const write = (path: string[], value: boolean, what: string): void => {
+  const write = (path: string[], value: boolean | string, what: string): void => {
     // 写入失败必须可见：先前直接 `void form.mutate(...)`，失败被静默吞掉，
     // 界面上表现为「点了没反应」——那是比报错更坏的状态。
     try {
       const pending = form.mutate([{ op: 'set', path, value }])
       void Promise.resolve(pending).catch((error: unknown) => {
-        console.warn(`dsh-memory: ${what}开关写入失败`, error)
+        console.warn(`dsh-memory: ${what}写入失败`, error)
       })
     } catch (error) {
-      console.warn(`dsh-memory: ${what}开关写入抛错`, error)
+      console.warn(`dsh-memory: ${what}写入抛错`, error)
     }
   }
 
@@ -1073,17 +1139,49 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
       hint: '本机写日记。关掉后日记工具拒绝执行、不再注入指针；已有日记文件原样保留，不会被删。',
       enabled: diary,
       ariaLabel: '日记开关',
-      onToggle: () => write(['diary', 'enabled'], !diary, '日记'),
+      onToggle: () => write(['diary', 'enabled'], !diary, '日记开关'),
       divided: false,
     }),
     createElement(SwitchRow, {
       label: '云同步',
-      hint: '把本机记忆镜像到一个 git 仓库，多个环境共用一份记忆。关着时 memory_sync 与 memory_conflicts 根本不注册。打开后还需要在插件配置里填 sync.remote（留空 = 只做本地镜像与提交）。开关写入 profile 的 cordis.patch.yml：profile 开 patchReload: live 时即时生效，否则重启实例后生效。',
+      hint: '把本机记忆镜像到一个 git 仓库，多个环境共用一份记忆。关着时 memory_sync 与 memory_conflicts 根本不注册。打开后在下方填远端地址（留空 = 只做本地镜像与提交）。开关与连接配置都写进 profile 的 cordis.patch.yml：profile 开 patchReload: live 时即时生效，否则重启实例后生效。',
       enabled: sync,
       ariaLabel: '云同步开关',
-      onToggle: () => write(['sync', 'enabled'], !sync, '云同步'),
+      onToggle: () => write(['sync', 'enabled'], !sync, '云同步开关'),
       divided: true,
-    }))
+    }),
+    // 连接配置只在开关打开时出现：关着的时候填地址没有任何意义，只会让人以为在生效。
+    sync
+      ? createElement('div', { style: { padding: '2px 0 10px' } },
+        createElement(SyncField, {
+          label: '远端地址',
+          hint: 'https 地址。留空 = 只做本地镜像与提交，不向任何远端推送。',
+          ariaLabel: '云同步远端地址',
+          value: remote,
+          placeholder: 'https://github.com/<你>/<仓库>.git',
+          onCommit: next => write(['sync', 'remote'], next, '云同步远端地址'),
+        }),
+        createElement(SyncField, {
+          label: '镜像目录',
+          hint: '本机存放镜像仓库的位置。留空 = <DSH_HOME>/memory-sync。',
+          ariaLabel: '云同步镜像目录',
+          value: mirrorDir,
+          placeholder: '<DSH_HOME>/memory-sync',
+          onCommit: next => write(['sync', 'mirrorDir'], next, '云同步镜像目录'),
+        }),
+        createElement(SyncField, {
+          label: '分支',
+          hint: '推送/拉取用的分支。留空 = main。',
+          ariaLabel: '云同步分支',
+          value: branch,
+          placeholder: 'main',
+          onCommit: next => write(['sync', 'branch'], next, '云同步分支'),
+        }),
+        createElement('div', {
+          style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', lineHeight: 1.5 },
+        }, '访问令牌（PAT）不进配置：设置环境变量 ', createElement('code', null, 'DSH_MEMORY_SYNC_TOKEN'), ' 后重启实例。它一旦落进 patch 文件就会跟着被复制和分享。'),
+      )
+      : null)
 }
 
 // ---- client plugin body ----
