@@ -1193,10 +1193,78 @@ function SyncTokenField() {
     }),
     (0, import_react.createElement)("div", {
       style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 3, lineHeight: 1.45 }
-    }, "\u4EE4\u724C\u5B58\u5728 $DSH_HOME/memory-sync-token \u7684\u72EC\u7ACB\u6587\u4EF6\u91CC\uFF0C\u4E0D\u8FDB\u63D2\u4EF6\u914D\u7F6E\uFF1B\u4E5F\u8BA4\u73AF\u5883\u53D8\u91CF DSH_MEMORY_SYNC_TOKEN\uFF08\u4F18\u5148\uFF09\u3002"),
+    }, "\u4EE4\u724C\u53EA\u5B58\u5728\u4F60\u8FD9\u53F0\u7535\u8111\u4E0A\uFF0C\u4E0D\u4F1A\u5199\u8FDB\u63D2\u4EF6\u914D\u7F6E\uFF0C\u4E5F\u4E0D\u4F1A\u8DDF\u7740\u914D\u7F6E\u88AB\u5206\u4EAB\u51FA\u53BB\u3002"),
     note === "" ? null : (0, import_react.createElement)("div", {
       style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", marginTop: 2 }
     }, note)
+  );
+}
+var SYNC_GUIDE_PROMPT = "\u6211\u8981\u7528 dsh-memory \u7684\u4E91\u540C\u6B65\u529F\u80FD\uFF0C\u8BF7\u5F15\u5BFC\u6211\u5B8C\u6210\u914D\u7F6E\uFF1A\n1. \u5728\u4E00\u4E2A\u4EE3\u7801\u6258\u7BA1\u5E73\u53F0\uFF08GitHub / Gitee \u7B49\uFF09\u65B0\u5EFA\u4E00\u4E2A\u79C1\u6709\u4ED3\u5E93\uFF0C\u4E13\u95E8\u653E\u8BB0\u5FC6\uFF0C\u4E0D\u8981\u7528\u516C\u5F00\u4ED3\u5E93\uFF1B\n2. \u521B\u5EFA\u4E00\u4E2A\u8BBF\u95EE\u4EE4\u724C\uFF08PAT\uFF09\uFF0C\u53EA\u7ED9\u5B83\u8FD9\u4E00\u4E2A\u4ED3\u5E93\u7684\u8BFB\u5199\u6743\u9650\uFF1B\n3. \u5E2E\u6211\u786E\u8BA4\u4ED3\u5E93\u5730\u5740\uFF08\u5F62\u5982 https://github.com/\u6211/\u4ED3\u5E93.git\uFF09\uFF1B\n4. \u6211\u81EA\u5DF1\u628A\u4EE4\u724C\u586B\u8FDB\u63D2\u4EF6\u8BBE\u7F6E\u91CC\u7684\u300C\u8BBF\u95EE\u4EE4\u724C\u300D\u6846\u2014\u2014\u4E0D\u8981\u8BA9\u6211\u628A\u4EE4\u724C\u8D34\u8FDB\u5BF9\u8BDD\uFF0C\u4E5F\u4E0D\u8981\u8BFB\u53D6\u6216\u6253\u5370\u5B83\uFF1B\n5. \u91CD\u542F\u601D\u7075\u540E\u5E2E\u6211\u9A8C\u8BC1\u540C\u6B65\u53EF\u7528\uFF08\u5148\u53EA\u8DD1 status\uFF0C\u522B\u6025\u7740 push\uFF09\u3002\n\u4F60\u80FD\u7528 gh \u547D\u4EE4\u5E2E\u6211\u5EFA\u4ED3\u5E93\u7684\u8BDD\u5C31\u5EFA\uFF0C\u5EFA\u4E0D\u4E86\u5C31\u544A\u8BC9\u6211\u8BE5\u70B9\u54EA\u91CC\u3002";
+var LINK_BUTTON = {
+  padding: 0,
+  border: "none",
+  background: "none",
+  cursor: "pointer",
+  fontSize: 11,
+  color: "var(--dsw-alias-state-business-primary, #4FC3F7)",
+  textDecoration: "underline"
+};
+function SyncGuide() {
+  const [open, setOpen] = (0, import_react.useState)(false);
+  const [note, setNote] = (0, import_react.useState)("");
+  const copy = () => {
+    const clipboard = typeof navigator === "undefined" ? void 0 : navigator.clipboard;
+    if (clipboard === void 0 || typeof clipboard.writeText !== "function") {
+      setNote("\u8FD9\u4E2A\u73AF\u5883\u4E0D\u8BA9\u81EA\u52A8\u590D\u5236\uFF0C\u8BF7\u624B\u52A8\u9009\u4E2D\u4E0A\u9762\u7684\u8BF4\u660E");
+      return;
+    }
+    void Promise.resolve(clipboard.writeText(SYNC_GUIDE_PROMPT)).then(() => setNote("\u5DF2\u590D\u5236\uFF0C\u7C98\u8D34\u5230\u4EFB\u610F\u65B0\u4F1A\u8BDD\u5373\u53EF")).catch(() => setNote("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u9009\u4E2D"));
+  };
+  return (0, import_react.createElement)(
+    "div",
+    { style: { padding: "2px 0 8px" } },
+    (0, import_react.createElement)(
+      "div",
+      { style: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" } },
+      (0, import_react.createElement)("button", {
+        type: "button",
+        "aria-label": "\u5C55\u5F00\u4E91\u540C\u6B65\u914D\u7F6E\u8BF4\u660E",
+        onClick: () => setOpen((value) => !value),
+        style: LINK_BUTTON
+      }, open ? "\u6536\u8D77\u8BF4\u660E" : "\u7B2C\u4E00\u6B21\u7528\uFF1F\u770B\u770B\u600E\u4E48\u914D"),
+      (0, import_react.createElement)("button", {
+        type: "button",
+        "aria-label": "\u590D\u5236\u8BA9 DSH \u5E2E\u6211\u914D\u7684\u63D0\u793A\u8BCD",
+        onClick: copy,
+        style: LINK_BUTTON
+      }, "\u590D\u5236\u300C\u8BA9 DSH \u5E2E\u6211\u914D\u300D"),
+      note === "" ? null : (0, import_react.createElement)("span", {
+        style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)" }
+      }, note)
+    ),
+    open ? (0, import_react.createElement)(
+      "div",
+      {
+        style: {
+          marginTop: 6,
+          padding: "8px 10px",
+          borderRadius: 8,
+          lineHeight: 1.65,
+          fontSize: 11.5,
+          color: "var(--dsw-alias-label-secondary, #67748a)",
+          background: "rgba(127, 127, 127, 0.06)"
+        }
+      },
+      (0, import_react.createElement)("div", null, "1. \u5728\u4E00\u4E2A\u4EE3\u7801\u6258\u7BA1\u5E73\u53F0\uFF08GitHub / Gitee \u7B49\uFF09\u65B0\u5EFA\u4E00\u4E2A\u79C1\u6709\u4ED3\u5E93\uFF0C\u4E13\u95E8\u653E\u8BB0\u5FC6\u3002"),
+      (0, import_react.createElement)("div", null, "2. \u521B\u5EFA\u4E00\u4E2A\u8BBF\u95EE\u4EE4\u724C\uFF08PAT\uFF09\uFF0C\u53EA\u7ED9\u5B83\u8FD9\u4E00\u4E2A\u4ED3\u5E93\u7684\u8BFB\u5199\u6743\u9650\u3002"),
+      (0, import_react.createElement)("div", null, "3. \u4ED3\u5E93\u5730\u5740\u586B\u8FDB\u4E0A\u9762\u7684\u300C\u8FDC\u7AEF\u5730\u5740\u300D\uFF0C\u4EE4\u724C\u586B\u8FDB\u300C\u8BBF\u95EE\u4EE4\u724C\u300D\u3002"),
+      (0, import_react.createElement)("div", null, "4. \u91CD\u542F\u601D\u7075\uFF0C\u7136\u540E\u5728\u4F1A\u8BDD\u91CC\u8BA9\u6211\u6267\u884C memory_sync \u7684 push / pull\u3002"),
+      (0, import_react.createElement)(
+        "div",
+        { style: { marginTop: 4 } },
+        "\u4E0D\u60F3\u81EA\u5DF1\u5F04\uFF1F\u70B9\u300C\u590D\u5236\u300C\u8BA9 DSH \u5E2E\u6211\u914D\u300D\u300D\uFF0C\u628A\u90A3\u6BB5\u8BDD\u7C98\u8D34\u5230\u4EFB\u610F\u65B0\u4F1A\u8BDD\u91CC\uFF0C\u6211\u5E26\u4F60\u4E00\u6B65\u6B65\u505A\u3002"
+      )
+    ) : null
   );
 }
 function MemorySettingsCard(props) {
@@ -1244,7 +1312,7 @@ function MemorySettingsCard(props) {
     }),
     (0, import_react.createElement)(SwitchRow, {
       label: "\u4E91\u540C\u6B65",
-      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u955C\u50CF\u5230\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u591A\u4E2A\u73AF\u5883\u5171\u7528\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6 memory_sync \u4E0E memory_conflicts \u6839\u672C\u4E0D\u6CE8\u518C\u3002\u6253\u5F00\u540E\u5728\u4E0B\u65B9\u586B\u8FDC\u7AEF\u5730\u5740\uFF08\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF09\u3002\u5F00\u5173\u4E0E\u8FDE\u63A5\u914D\u7F6E\u90FD\u5199\u8FDB profile \u7684 cordis.patch.yml\uFF1Aprofile \u5F00 patchReload: live \u65F6\u5373\u65F6\u751F\u6548\uFF0C\u5426\u5219\u91CD\u542F\u5B9E\u4F8B\u540E\u751F\u6548\u3002",
+      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u5907\u4EFD\u5230\u4F60\u81EA\u5DF1\u7684\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u51E0\u53F0\u7535\u8111\u4E4B\u95F4\u5171\u7528\u540C\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6\u540C\u6B65\u5DE5\u5177\u6839\u672C\u4E0D\u4F1A\u51FA\u73B0\u3002\u6253\u5F00\u540E\u586B\u4E0A\u4ED3\u5E93\u5730\u5740\u548C\u8BBF\u95EE\u4EE4\u724C\u5373\u53EF\uFF1B\u4E0D\u77E5\u9053\u586B\u4EC0\u4E48\u5C31\u7559\u7A7A\u2014\u2014\u90A3\u53EA\u4F1A\u5728\u8FD9\u53F0\u7535\u8111\u4E0A\u5B58\u4E00\u4EFD\u955C\u50CF\uFF0C\u4E0D\u4F1A\u4F20\u5230\u4EFB\u4F55\u5730\u65B9\u3002",
       enabled: sync,
       ariaLabel: "\u4E91\u540C\u6B65\u5F00\u5173",
       onToggle: () => write(["sync", "enabled"], !sync, "\u4E91\u540C\u6B65\u5F00\u5173"),
@@ -1256,7 +1324,7 @@ function MemorySettingsCard(props) {
       { style: { padding: "2px 0 10px" } },
       (0, import_react.createElement)(SyncField, {
         label: "\u8FDC\u7AEF\u5730\u5740",
-        hint: "https \u5730\u5740\u3002\u7559\u7A7A = \u53EA\u505A\u672C\u5730\u955C\u50CF\u4E0E\u63D0\u4EA4\uFF0C\u4E0D\u5411\u4EFB\u4F55\u8FDC\u7AEF\u63A8\u9001\u3002",
+        hint: "\u4F60\u7684\u4ED3\u5E93\u5730\u5740\uFF08https \u5F00\u5934\uFF09\u3002\u7559\u7A7A\u5C31\u662F\u53EA\u5728\u672C\u673A\u5B58\u4E00\u4EFD\uFF0C\u4E0D\u5916\u4F20\u3002",
         ariaLabel: "\u4E91\u540C\u6B65\u8FDC\u7AEF\u5730\u5740",
         value: remote,
         placeholder: "https://github.com/<\u4F60>/<\u4ED3\u5E93>.git",
@@ -1264,24 +1332,25 @@ function MemorySettingsCard(props) {
       }),
       (0, import_react.createElement)(SyncField, {
         label: "\u955C\u50CF\u76EE\u5F55",
-        hint: "\u672C\u673A\u5B58\u653E\u955C\u50CF\u4ED3\u5E93\u7684\u4F4D\u7F6E\u3002\u7559\u7A7A = <DSH_HOME>/memory-sync\u3002",
+        hint: "\u955C\u50CF\u5B58\u5728\u54EA\u3002\u7559\u7A7A\u5C31\u7528\u9ED8\u8BA4\u4F4D\u7F6E\u3002",
         ariaLabel: "\u4E91\u540C\u6B65\u955C\u50CF\u76EE\u5F55",
         value: mirrorDir,
-        placeholder: "<DSH_HOME>/memory-sync",
+        placeholder: "\u7559\u7A7A = \u9ED8\u8BA4\u4F4D\u7F6E",
         onCommit: (next) => write(["sync", "mirrorDir"], next, "\u4E91\u540C\u6B65\u955C\u50CF\u76EE\u5F55")
       }),
       (0, import_react.createElement)(SyncField, {
         label: "\u5206\u652F",
-        hint: "\u63A8\u9001/\u62C9\u53D6\u7528\u7684\u5206\u652F\u3002\u7559\u7A7A = main\u3002",
+        hint: "\u4E00\u822C\u7559\u7A7A\u5373\u53EF\u3002",
         ariaLabel: "\u4E91\u540C\u6B65\u5206\u652F",
         value: branch,
         placeholder: "main",
         onCommit: (next) => write(["sync", "branch"], next, "\u4E91\u540C\u6B65\u5206\u652F")
       }),
       (0, import_react.createElement)(SyncTokenField),
+      (0, import_react.createElement)(SyncGuide),
       (0, import_react.createElement)("div", {
         style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", lineHeight: 1.5, marginTop: 2 }
-      }, "\u4EE5\u4E0A\u5B57\u6BB5\u5199\u8FDB profile \u7684 cordis.patch.yml\uFF0C\u6539\u5B8C\u8981\u91CD\u542F\u5B9E\u4F8B\u751F\u6548\u3002")
+      }, "\u586B\u597D\u540E\u91CD\u542F\u601D\u7075\u751F\u6548\u3002\u6CA1\u6709\u4ED3\u5E93\u5730\u5740\u5C31\u7559\u7A7A\uFF0C\u53EA\u5728\u672C\u673A\u5B58\u4E00\u4EFD\u955C\u50CF\u3002")
     ) : null
   );
 }

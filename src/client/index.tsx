@@ -1169,12 +1169,89 @@ function SyncTokenField(): ReactNode {
     }),
     createElement('div', {
       style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', marginTop: 3, lineHeight: 1.45 },
-    }, '令牌存在 $DSH_HOME/memory-sync-token 的独立文件里，不进插件配置；也认环境变量 DSH_MEMORY_SYNC_TOKEN（优先）。'),
+    }, '令牌只存在你这台电脑上，不会写进插件配置，也不会跟着配置被分享出去。'),
     note === ''
       ? null
       : createElement('div', {
         style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', marginTop: 2 },
       }, note),
+  )
+}
+
+/**
+ * 给使用者的配置引导（2026-11-13）。
+ *
+ * 三个输入框本身不解释「从哪弄仓库、令牌怎么来」——普通人第一次看到会卡住。
+ * 所以这里给两条路：一段就地展开的步骤，和一段可复制的提示词（丢给任意会话，
+ * 让 DSH 带着做）。**提示词里明确不让模型碰令牌明文**：令牌由使用者自己填进
+ * 面板，不进对话记录。
+ */
+const SYNC_GUIDE_PROMPT = '我要用 dsh-memory 的云同步功能，请引导我完成配置：\n'
+  + '1. 在一个代码托管平台（GitHub / Gitee 等）新建一个私有仓库，专门放记忆，不要用公开仓库；\n'
+  + '2. 创建一个访问令牌（PAT），只给它这一个仓库的读写权限；\n'
+  + '3. 帮我确认仓库地址（形如 https://github.com/我/仓库.git）；\n'
+  + '4. 我自己把令牌填进插件设置里的「访问令牌」框——不要让我把令牌贴进对话，也不要读取或打印它；\n'
+  + '5. 重启思灵后帮我验证同步可用（先只跑 status，别急着 push）。\n'
+  + '你能用 gh 命令帮我建仓库的话就建，建不了就告诉我该点哪里。'
+
+/** 一行文字按钮的样式。 */
+const LINK_BUTTON = {
+  padding: 0, border: 'none', background: 'none', cursor: 'pointer',
+  fontSize: 11, color: 'var(--dsw-alias-state-business-primary, #4FC3F7)', textDecoration: 'underline',
+} as const
+
+/** 引导区：展开式步骤 + 复制提示词。 */
+function SyncGuide(): ReactNode {
+  const [open, setOpen] = useState(false)
+  const [note, setNote] = useState('')
+
+  const copy = (): void => {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clipboard === undefined || typeof clipboard.writeText !== 'function') {
+      setNote('这个环境不让自动复制，请手动选中上面的说明')
+      return
+    }
+    void Promise.resolve(clipboard.writeText(SYNC_GUIDE_PROMPT))
+      .then(() => setNote('已复制，粘贴到任意新会话即可'))
+      .catch(() => setNote('复制失败，请手动选中'))
+  }
+
+  return createElement('div', { style: { padding: '2px 0 8px' } },
+    createElement('div', { style: { display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' } },
+      createElement('button', {
+        type: 'button',
+        'aria-label': '展开云同步配置说明',
+        onClick: () => setOpen(value => !value),
+        style: LINK_BUTTON,
+      }, open ? '收起说明' : '第一次用？看看怎么配'),
+      createElement('button', {
+        type: 'button',
+        'aria-label': '复制让 DSH 帮我配的提示词',
+        onClick: copy,
+        style: LINK_BUTTON,
+      }, '复制「让 DSH 帮我配」'),
+      note === ''
+        ? null
+        : createElement('span', {
+          style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)' },
+        }, note),
+    ),
+    open
+      ? createElement('div', {
+        style: {
+          marginTop: 6, padding: '8px 10px', borderRadius: 8, lineHeight: 1.65,
+          fontSize: 11.5, color: 'var(--dsw-alias-label-secondary, #67748a)',
+          background: 'rgba(127, 127, 127, 0.06)',
+        },
+      },
+      createElement('div', null, '1. 在一个代码托管平台（GitHub / Gitee 等）新建一个私有仓库，专门放记忆。'),
+      createElement('div', null, '2. 创建一个访问令牌（PAT），只给它这一个仓库的读写权限。'),
+      createElement('div', null, '3. 仓库地址填进上面的「远端地址」，令牌填进「访问令牌」。'),
+      createElement('div', null, '4. 重启思灵，然后在会话里让我执行 memory_sync 的 push / pull。'),
+      createElement('div', { style: { marginTop: 4 } },
+        '不想自己弄？点「复制「让 DSH 帮我配」」，把那段话粘贴到任意新会话里，我带你一步步做。'),
+      )
+      : null,
   )
 }
 
@@ -1237,7 +1314,7 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
     }),
     createElement(SwitchRow, {
       label: '云同步',
-      hint: '把本机记忆镜像到一个 git 仓库，多个环境共用一份记忆。关着时 memory_sync 与 memory_conflicts 根本不注册。打开后在下方填远端地址（留空 = 只做本地镜像与提交）。开关与连接配置都写进 profile 的 cordis.patch.yml：profile 开 patchReload: live 时即时生效，否则重启实例后生效。',
+      hint: '把本机记忆备份到你自己的一个 git 仓库，几台电脑之间共用同一份记忆。关着时同步工具根本不会出现。打开后填上仓库地址和访问令牌即可；不知道填什么就留空——那只会在这台电脑上存一份镜像，不会传到任何地方。',
       enabled: sync,
       ariaLabel: '云同步开关',
       onToggle: () => write(['sync', 'enabled'], !sync, '云同步开关'),
@@ -1248,7 +1325,7 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
       ? createElement('div', { style: { padding: '2px 0 10px' } },
         createElement(SyncField, {
           label: '远端地址',
-          hint: 'https 地址。留空 = 只做本地镜像与提交，不向任何远端推送。',
+          hint: '你的仓库地址（https 开头）。留空就是只在本机存一份，不外传。',
           ariaLabel: '云同步远端地址',
           value: remote,
           placeholder: 'https://github.com/<你>/<仓库>.git',
@@ -1256,24 +1333,25 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
         }),
         createElement(SyncField, {
           label: '镜像目录',
-          hint: '本机存放镜像仓库的位置。留空 = <DSH_HOME>/memory-sync。',
+          hint: '镜像存在哪。留空就用默认位置。',
           ariaLabel: '云同步镜像目录',
           value: mirrorDir,
-          placeholder: '<DSH_HOME>/memory-sync',
+          placeholder: '留空 = 默认位置',
           onCommit: next => write(['sync', 'mirrorDir'], next, '云同步镜像目录'),
         }),
         createElement(SyncField, {
           label: '分支',
-          hint: '推送/拉取用的分支。留空 = main。',
+          hint: '一般留空即可。',
           ariaLabel: '云同步分支',
           value: branch,
           placeholder: 'main',
           onCommit: next => write(['sync', 'branch'], next, '云同步分支'),
         }),
         createElement(SyncTokenField),
+        createElement(SyncGuide),
         createElement('div', {
           style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', lineHeight: 1.5, marginTop: 2 },
-        }, '以上字段写进 profile 的 cordis.patch.yml，改完要重启实例生效。'),
+        }, '填好后重启思灵生效。没有仓库地址就留空，只在本机存一份镜像。'),
       )
       : null)
 }
