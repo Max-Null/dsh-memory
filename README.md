@@ -19,9 +19,11 @@ This plugin belongs to the **`@max-null/*` family** — a set of plugins that to
 
 **入口：** 设置 → 记忆
 
-| 设置入口与面板 |
-|---|
-| ![设置 → 记忆](docs/shots/memory-settings-1.png) |
+| 设置入口与面板 | 云同步配置（开关打开后） |
+|---|---|
+| ![设置 → 记忆](docs/shots/memory-settings-1.png) | ![云同步配置](docs/shots/sync-config-1.png) |
+
+云同步那块的三步走：打开开关 → 填仓库地址与访问令牌（不知道填什么就留空，只做本机镜像）→ 重启生效。第一次用可以点「第一次用？看看怎么配」看四步说明，或者点「复制「让 DSH 帮我配」」把那段话粘到任意会话里让 DSH 带你做。
 
 
 ## 用法
