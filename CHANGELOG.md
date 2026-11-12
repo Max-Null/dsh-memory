@@ -18,6 +18,10 @@
 
 测试：`test/sync-default-off.spec.ts` 从 3 条扩到 5 条，语义按新判据重排——不配 `sync` 不注册、**配了 remote 但没开 `enabled` 不注册**（旧判据的反转）、`enabled: false` + remote 也不注册、`enabled: true` + remote 注册且自述变 16、`enabled: true` 无 remote 也注册。做了负向控制：把 `syncOn` 写成不解包时，后两条立刻变红。
 
+**设置页导航图标改为注册宿主的 `settings.section.icon` 插槽**（DSH 0.2.2-rc.1 起提供）。旧方案用 `MutationObserver` 标记导航行、用 `::before` mask 画大脑、再把导航按钮的直接子 svg 隐藏掉；0.2.2-rc.1 把图标包进 `span.navIcon` 之后，那条 `> svg:first-child` 不命中，齿轮重新露出来——设置页「记忆」一行会同时出现大脑和齿轮两个图标。现在按 section id 注册图标组件，宿主用它替代默认齿轮，DOM 钩子整段删除。
+
+**代价（有意为之）**：内核低于 0.2.2-rc.1 时没有这个插槽，图标退回宿主默认齿轮。2026-11-13 明确不为旧内核保留降级分支。
+
 ## [0.22.1] - 2026-11-11
 
 ### 修正

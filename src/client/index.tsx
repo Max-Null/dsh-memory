@@ -103,55 +103,16 @@ function brainIcon(): ReactNode {
   }, BRAIN_PATHS.map((d, index) => createElement('path', { key: index, d })))
 }
 
-// ---- 设置页导航图标替换（照 dsh-plugin-center settings-nav-icon 模式） ----
-// DSH 0.1.x settings.section 无 icon 契约（外部 section 一律默认齿轮）。
-// MutationObserver 按当前本地化 label 标记本插件行，CSS mask 换成大脑。
-const SETTINGS_NAV_MARKER = 'data-dsh-memory-settings-nav'
-const BRAIN_MASK_SVG = `%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z'/%3E%3Cpath d='M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z'/%3E%3C/svg%3E`
-const NAV_ICON_CSS = `
-[data-dsh-memory-settings-nav] > svg:first-child { display: none; }
-[data-dsh-memory-settings-nav]::before {
-  content: '';
-  flex: none;
-  width: 16px;
-  height: 16px;
-  background: currentColor;
-  -webkit-mask: url("data:image/svg+xml,${BRAIN_MASK_SVG}") center / contain no-repeat;
-  mask: url("data:image/svg+xml,${BRAIN_MASK_SVG}") center / contain no-repeat;
-}
-`
-let navCssInjected = false
-function injectNavCss(): void {
-  if (navCssInjected || typeof document === 'undefined') return
-  navCssInjected = true
-  const style = document.createElement('style')
-  style.setAttribute('data-plugin', '@max-null/dsh-memory')
-  style.textContent = NAV_ICON_CSS
-  document.head.append(style)
-}
-
-/** 标记设置对话框里本插件的导航行（照 dsh-plugin-center 同款，HMR-safe）。 */
-function registerSettingsNavIcon(label: () => string): () => void {
-  let disposed = false
-  const sync = (): void => {
-    if (disposed) return
-    const currentLabel = label().trim()
-    const buttons = document.querySelectorAll<HTMLButtonElement>('[role="dialog"] nav button')
-    for (const button of buttons) {
-      const matches = currentLabel.length > 0 && button.textContent?.trim() === currentLabel
-      if (matches) button.setAttribute(SETTINGS_NAV_MARKER, '')
-      else button.removeAttribute(SETTINGS_NAV_MARKER)
-    }
-  }
-  sync()
-  const observer = new MutationObserver(sync)
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true })
-  return () => {
-    disposed = true
-    observer.disconnect()
-    document.querySelectorAll(`[${SETTINGS_NAV_MARKER}]`)
-      .forEach((element) => { element.removeAttribute(SETTINGS_NAV_MARKER) })
-  }
+// ---- 设置页导航图标（宿主 settings.section.icon 插槽，DSH 0.2.2-rc.1 起） ----
+// 0.2.1 及更早没有 icon 契约，只能靠 MutationObserver 标记导航按钮、用 `::before`
+// mask 画图标再隐去宿主默认齿轮。0.2.2-rc.1 把导航图标包进 `span.navIcon`，那条
+// `> svg:first-child` 失配，齿轮重新露出来 → 双图标（2026-11-12 实拍）。
+// 现在直接注册宿主插槽：按 section id 取图，尺寸与选中态都由宿主给。
+function navIcon(size: number): ReactNode {
+  return createElement('svg', {
+    width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
+  }, BRAIN_PATHS.map((d, index) => createElement('path', { key: index, d })))
 }
 
 // ---- i18n (DSH zh/en, plugin-center pattern) ----
@@ -1143,7 +1104,6 @@ export function apply(ctx: unknown): void {
   // 兜底入口：设置页「记忆」条目——任何环境（无 better-sidebar 也）可管理记忆。
   // 与侧栏 tab 双入口并存（2026-08-19 用户：没有侧栏就没有管理面板的问题）。
   if (slots?.inject !== undefined) {
-    injectNavCss()
     slots.inject('settings.section', () => slots.register({
       name: 'settings.section',
       id: 'dsh-memory',
@@ -1153,8 +1113,13 @@ export function apply(ctx: unknown): void {
     }, () => createElement(SettingsMemoryView, {
       ctx: ctx as LocaleAwareContext,
     })))
-    // 设置导航图标：大脑（DSH 无 icon 契约，MutationObserver + CSS mask 替换齿轮）
-    face.effect?.(() => registerSettingsNavIcon(() => STRINGS[localeId].tabMemory), 'dsh-memory: settings navigation icon')
+    // 设置导航图标：注册宿主同 id 插槽，宿主用它替代默认齿轮。
+    slots.inject('settings.section.icon', () => slots.register({
+      name: 'settings.section.icon',
+      id: 'dsh-memory',
+      order: 60,
+      label: () => STRINGS[localeId].tabMemory,
+    }, (props: { size?: number }) => navIcon(props?.size ?? 16)))
   }
 
   // 插件页「记忆」详情里的配置卡片（0.19.0 日记开关；2026-11-12 加云同步开关）。
