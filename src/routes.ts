@@ -12,6 +12,8 @@ import type { MemoryEngine } from './engine.ts'
 import { SELF_DESCRIPTION } from './self.ts'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, renderInjection } from './injection.ts'
 import { clearSyncTokenFile, readSyncTokenFile, writeSyncTokenFile } from './sync-token.ts'
+import { syncTest } from './sync-service.ts'
+import type { SyncConfig } from './sync-service.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -136,7 +138,7 @@ function promptProjection(record: import('./engine.ts').MemoryRecord): Record<st
 }
 
 /** 挂载 /memory/api 路由（apply 调用）。 */
-export function mountMemoryApi(ctx: Context): void {
+export function mountMemoryApi(ctx: Context, getSyncConfig?: () => SyncConfig): void {
   // webServer/webStartup 由 index.ts 的 inject 声明（Context 类型未扩展，断言访问）
   const webServer = (ctx as unknown as { webServer: {
     register(descriptor: { kind: string, path: string, handler: (req: unknown, res: unknown) => Promise<void> | void }): () => void
@@ -230,6 +232,14 @@ export function mountMemoryApi(ctx: Context): void {
         return { set: false }
       }
       throw new MemoryApiError('bad-request', 'action must be status | set | clear')
+    },
+    // ── 测试连接（2026-11-13）：面板填完地址/令牌/代理后点一下，验一遍 ls-remote。
+    // 只读，不写本地仓库、不推不拉。
+    'syncTest': async () => {
+      if (getSyncConfig === undefined) {
+        throw new MemoryApiError('service-unavailable', 'sync config unavailable', 503)
+      }
+      return syncTest(getSyncConfig())
     },
     // ── 提示词模板库（0.6.0）──
     'prompt.list': async (payload) => {

@@ -18,6 +18,7 @@
 import * as nodeFs from 'node:fs'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { createProxiedHttp } from './sync-http.ts'
 
 /** 远端操作共用的参数。 */
 export interface RemoteOptions {
@@ -29,6 +30,8 @@ export interface RemoteOptions {
   readonly branch?: string
   /** GitHub PAT；缺省时只尝试匿名（私有仓库会失败）。 */
   readonly token?: string
+  /** 代理地址（形如 `http://127.0.0.1:7897`）；缺省时直连，见 sync-http.ts。 */
+  readonly proxy?: string
 }
 
 /** 一次远端操作的结果。 */
@@ -46,13 +49,16 @@ export interface RemoteRun {
 /** 默认分支。 */
 const DEFAULT_BRANCH = 'main'
 
-/** 动态载入 isomorphic-git 与它的 Node http 实现。 */
-async function loadGit() {
-  const [git, http] = await Promise.all([
+/** 动态载入 isomorphic-git；配了代理就换成代理感知的 HTTP 客户端。 */
+async function loadGit(proxy?: string) {
+  const [git, defaultHttp] = await Promise.all([
     import('isomorphic-git'),
     import('isomorphic-git/http/node'),
   ])
-  return { git: git.default, http: http.default }
+  const http = proxy === undefined || proxy === ''
+    ? defaultHttp.default
+    : createProxiedHttp(proxy)
+  return { git: git.default, http }
 }
 
 /** 把原始错误归到三类之一，便于调用方决定是改凭据还是重试。 */
@@ -97,7 +103,7 @@ function isRepo(dir: string): boolean {
  */
 export async function ensureMirrorRepo(options: RemoteOptions): Promise<MirrorRepoRun> {
   if (isRepo(options.dir)) return { cloned: false }
-  const { git, http } = await loadGit()
+  const { git, http } = await loadGit(options.proxy)
   try {
     await git.clone({
       fs: nodeFs,
@@ -131,7 +137,7 @@ export async function pushMirror(options: RemoteOptions): Promise<RemoteRun> {
   if (!isRepo(options.dir)) {
     return { ok: false, error: `not a git repository: ${options.dir}`, kind: 'unknown' }
   }
-  const { git, http } = await loadGit()
+  const { git, http } = await loadGit(options.proxy)
   try {
     await git.push({
       fs: nodeFs,
@@ -160,7 +166,7 @@ export async function pullMirror(options: RemoteOptions): Promise<RemoteRun> {
   if (!isRepo(options.dir)) {
     return { ok: false, error: `not a git repository: ${options.dir}`, kind: 'unknown' }
   }
-  const { git, http } = await loadGit()
+  const { git, http } = await loadGit(options.proxy)
   try {
     await git.pull({
       fs: nodeFs,
@@ -192,3 +198,47 @@ export async function ensureRemote(dir: string, url: string): Promise<void> {
   if (origin?.url === url) return
   await git.addRemote({ fs: nodeFs, dir, remote: 'origin', url, force: true })
 }
+
+/** 一次远端探测的结果（面板「测试连接」用）。 */
+export interface RemoteProbe {
+  readonly ok: boolean
+  /** 失败原因；成功时缺省。 */
+  readonly error?: string
+  /** 失败分类：认证错和连不上要分开报。 */
+  readonly kind?: 'auth' | 'network' | 'unknown'
+  /** 成功时远端的分支名。 */
+  readonly branches?: string[]
+}
+
+/**
+ * 探测远端是否可达、凭据是否有效。
+ *
+ * 用 `getRemoteInfo`（本质是 `ls-remote`）：不写本地仓库、不推不拉，但会真实走一遍
+ * 网络与认证——正好验完「地址对不对 / token 通不通 / 代理通不通」三件事。
+ * 2026-11-13 加它是因为推不上去时只能靠猜：用户机器上系统 git 走代理能通、
+ * 插件的 node 直连超时，而面板上没有任何地方能看出来是哪一环坏的。
+ *
+ * @param options - 远端地址、token 与代理。
+ */
+export async function probeRemote(options: Omit<RemoteOptions, 'dir'>): Promise<RemoteProbe> {
+  const { git, http } = await loadGit(options.proxy)
+  try {
+    const info = await git.getRemoteInfo({
+      http,
+      url: options.url,
+      ...options.token === undefined || options.token === ''
+        ? {}
+        : { onAuth: () => ({ username: 'x-access-token', password: options.token }) },
+    })
+    const heads = (info as { refs?: { heads?: Record<string, unknown> } }).refs?.heads ?? {}
+    return { ok: true, branches: Object.keys(heads) }
+  } catch (error: unknown) {
+    const run = classify(error)
+    return {
+      ok: false,
+      ...run.error === undefined ? {} : { error: run.error },
+      ...run.kind === undefined ? {} : { kind: run.kind },
+    }
+  }
+}
+

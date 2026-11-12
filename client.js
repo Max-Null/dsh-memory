@@ -1274,6 +1274,9 @@ function MemorySettingsCard(props) {
   const [remote, setRemote] = (0, import_react.useState)("");
   const [mirrorDir, setMirrorDir] = (0, import_react.useState)("");
   const [branch, setBranch] = (0, import_react.useState)("");
+  const [proxy, setProxy] = (0, import_react.useState)("");
+  const [testNote, setTestNote] = (0, import_react.useState)("");
+  const [testing, setTesting] = (0, import_react.useState)(false);
   (0, import_react.useEffect)(() => {
     const read = () => {
       const value = form.getSnapshot()?.value;
@@ -1282,6 +1285,7 @@ function MemorySettingsCard(props) {
       setRemote(value?.sync?.remote ?? "");
       setMirrorDir(value?.sync?.mirrorDir ?? "");
       setBranch(value?.sync?.branch ?? "");
+      setProxy(value?.sync?.proxy ?? "");
     };
     read();
     const off = form.subscribe(read);
@@ -1312,7 +1316,7 @@ function MemorySettingsCard(props) {
     }),
     (0, import_react.createElement)(SwitchRow, {
       label: "\u4E91\u540C\u6B65",
-      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u5907\u4EFD\u5230\u4F60\u81EA\u5DF1\u7684\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u51E0\u53F0\u7535\u8111\u4E4B\u95F4\u5171\u7528\u540C\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6\u540C\u6B65\u5DE5\u5177\u6839\u672C\u4E0D\u4F1A\u51FA\u73B0\u3002\u6253\u5F00\u540E\u586B\u4E0A\u4ED3\u5E93\u5730\u5740\u548C\u8BBF\u95EE\u4EE4\u724C\u5373\u53EF\uFF1B\u4E0D\u77E5\u9053\u586B\u4EC0\u4E48\u5C31\u7559\u7A7A\u2014\u2014\u90A3\u53EA\u4F1A\u5728\u8FD9\u53F0\u7535\u8111\u4E0A\u5B58\u4E00\u4EFD\u955C\u50CF\uFF0C\u4E0D\u4F1A\u4F20\u5230\u4EFB\u4F55\u5730\u65B9\u3002",
+      hint: "\u628A\u672C\u673A\u8BB0\u5FC6\u5907\u4EFD\u5230\u4F60\u81EA\u5DF1\u7684\u4E00\u4E2A git \u4ED3\u5E93\uFF0C\u51E0\u53F0\u7535\u8111\u4E4B\u95F4\u5171\u7528\u540C\u4E00\u4EFD\u8BB0\u5FC6\u3002\u5173\u7740\u65F6\u540C\u6B65\u5DE5\u5177\u6839\u672C\u4E0D\u4F1A\u51FA\u73B0\u3002\u6253\u5F00\u540E\u586B\u4E0A\u4ED3\u5E93\u5730\u5740\u548C\u8BBF\u95EE\u4EE4\u724C\uFF1B\u8BBF\u95EE GitHub \u9700\u8981\u4EE3\u7406\u7684\u8BDD\u628A\u4EE3\u7406\u4E5F\u586B\u4E0A\uFF0C\u7136\u540E\u70B9\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u786E\u8BA4\u901A\u4E86\u3002\u4E0D\u77E5\u9053\u586B\u4EC0\u4E48\u5C31\u7559\u7A7A\u2014\u2014\u90A3\u53EA\u4F1A\u5728\u8FD9\u53F0\u7535\u8111\u4E0A\u5B58\u4E00\u4EFD\u955C\u50CF\uFF0C\u4E0D\u4F1A\u4F20\u5230\u4EFB\u4F55\u5730\u65B9\u3002",
       enabled: sync,
       ariaLabel: "\u4E91\u540C\u6B65\u5F00\u5173",
       onToggle: () => write(["sync", "enabled"], !sync, "\u4E91\u540C\u6B65\u5F00\u5173"),
@@ -1346,7 +1350,53 @@ function MemorySettingsCard(props) {
         placeholder: "main",
         onCommit: (next) => write(["sync", "branch"], next, "\u4E91\u540C\u6B65\u5206\u652F")
       }),
+      (0, import_react.createElement)(SyncField, {
+        label: "\u4EE3\u7406",
+        hint: "\u5982\u679C\u8BBF\u95EE GitHub \u9700\u8981\u4EE3\u7406\u624D\u586B\uFF0C\u4F8B\u5982 http://127.0.0.1:7897\uFF1B\u4E0D\u586B\u5C31\u662F\u76F4\u8FDE\u3002",
+        ariaLabel: "\u4E91\u540C\u6B65\u4EE3\u7406",
+        value: proxy,
+        placeholder: "http://127.0.0.1:7897\uFF08\u53EF\u9009\uFF09",
+        onCommit: (next) => write(["sync", "proxy"], next, "\u4E91\u540C\u6B65\u4EE3\u7406")
+      }),
       (0, import_react.createElement)(SyncTokenField),
+      (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", gap: 12, alignItems: "center", padding: "2px 0 6px" } },
+        (0, import_react.createElement)("button", {
+          type: "button",
+          "aria-label": "\u6D4B\u8BD5\u4E91\u540C\u6B65\u8FDE\u63A5",
+          disabled: testing,
+          onClick: () => {
+            setTesting(true);
+            setTestNote("\u6D4B\u8BD5\u4E2D\u2026");
+            void api("syncTest", {}).then((value) => {
+              const result = value;
+              if (result.ok === true) {
+                setTestNote(`\u8FDE\u4E0A\u4E86\uFF0C\u8FDC\u7AEF\u6709 ${result.branches?.length ?? 0} \u4E2A\u5206\u652F`);
+                return;
+              }
+              const reason = result.kind === "auth" ? "\u8BA4\u8BC1\u5931\u8D25\uFF1A\u4EE4\u724C\u4E0D\u5BF9\u6216\u6CA1\u6709\u8FD9\u4E2A\u4ED3\u5E93\u7684\u6743\u9650" : result.kind === "network" ? "\u8FDE\u4E0D\u4E0A\uFF1A\u68C0\u67E5\u7F51\u7EDC\uFF0C\u9700\u8981\u4EE3\u7406\u7684\u8BDD\u586B\u4E0A\u9762\u7684\u4EE3\u7406\u5730\u5740" : "\u8FDE\u63A5\u5931\u8D25";
+              setTestNote(`${reason}${result.error === void 0 ? "" : `\uFF08${result.error}\uFF09`}`);
+            }).catch((error) => {
+              setTestNote(`\u6D4B\u8BD5\u5931\u8D25\uFF1A${String(error)}`);
+            }).finally(() => {
+              setTesting(false);
+            });
+          },
+          style: {
+            padding: "5px 12px",
+            fontSize: 11.5,
+            cursor: testing ? "default" : "pointer",
+            borderRadius: 7,
+            border: "1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.3))",
+            background: testing ? "transparent" : "rgba(127, 127, 127, 0.07)",
+            color: "var(--dsw-alias-label-primary, #d8e0ea)"
+          }
+        }, testing ? "\u6D4B\u8BD5\u4E2D\u2026" : "\u6D4B\u8BD5\u8FDE\u63A5"),
+        testNote === "" ? null : (0, import_react.createElement)("span", {
+          style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)" }
+        }, testNote)
+      ),
       (0, import_react.createElement)(SyncGuide),
       (0, import_react.createElement)("div", {
         style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, #67748a)", lineHeight: 1.5, marginTop: 2 }

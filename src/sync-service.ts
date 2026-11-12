@@ -22,7 +22,8 @@ import { planImport } from './sync-import.ts'
 import type { ImportConflict, ImportedBlock, IncomingRecord } from './sync-import.ts'
 import { SYNC_STATE_FILE, TOMBSTONE_DIR, dropTombstoned, planTombstones } from './sync-tombstone.ts'
 import type { SyncState, Tombstone } from './sync-tombstone.ts'
-import { ensureMirrorRepo, ensureRemote, pullMirror, pushMirror } from './sync-remote.ts'
+import { ensureMirrorRepo, ensureRemote, probeRemote, pullMirror, pushMirror } from './sync-remote.ts'
+import type { RemoteProbe } from './sync-remote.ts'
 import { writeMirror } from './sync-writer.ts'
 
 /** 同步配置。 */
@@ -40,6 +41,13 @@ export interface SyncConfig {
    * 避免它落进 profile 配置或提交历史。
    */
   readonly token?: string
+  /**
+   * 代理地址（形如 `http://127.0.0.1:7897`）。缺省时直连。
+   *
+   * 2026-11-13 加：node 的 HTTP 不读 `HTTPS_PROXY`，在必须走代理才能访问 GitHub 的
+   * 网络里，push / pull 会一路超时（用户机器实测：系统 git 通、插件超时）。
+   */
+  readonly proxy?: string
 }
 
 /** 一次 push 的结果。 */
@@ -189,6 +197,7 @@ export async function syncPush(
       url: config.remote,
       ...config.branch === undefined ? {} : { branch: config.branch },
       ...config.token === undefined ? {} : { token: config.token },
+      ...config.proxy === undefined ? {} : { proxy: config.proxy },
     })
     if (!ready.cloned) {
       return {
@@ -310,6 +319,7 @@ export async function syncPull(
         url: config.remote,
         ...config.branch === undefined ? {} : { branch: config.branch },
         ...config.token === undefined ? {} : { token: config.token },
+      ...config.proxy === undefined ? {} : { proxy: config.proxy },
       })
       if (!ready.cloned) {
         return {
@@ -328,6 +338,7 @@ export async function syncPull(
       url: config.remote,
       ...config.branch === undefined ? {} : { branch: config.branch },
       ...config.token === undefined ? {} : { token: config.token },
+      ...config.proxy === undefined ? {} : { proxy: config.proxy },
     })
     if (!remote.ok) {
       return {
@@ -426,5 +437,28 @@ export function conflictFiles(config: SyncConfig): string[] {
   if (!existsSync(dir)) return []
   return readdirSync(dir).filter(name => name.endsWith('.json'))
 }
+
+/**
+ * 「测试连接」：用当前配置探一次远端。
+ *
+ * 面板上填完地址 / 令牌 / 代理后，点一下就能知道三件事里哪一件坏了——地址不通、
+ * 令牌无效、还是要走代理。之前没有这个入口时，推不上去只能靠猜（2026-11-13 用户机器：
+ * 系统 git 走代理能通、插件 node 直连超时，从面板上完全看不出来）。
+ *
+ * 只做 `ls-remote` 级别的探测：**不写本地仓库、不推不拉**。
+ *
+ * @param config - 当前同步配置（`remote` 必须有值）。
+ */
+export async function syncTest(config: SyncConfig): Promise<RemoteProbe> {
+  if (config.remote === undefined || config.remote === '') {
+    return { ok: false, error: '还没填仓库地址（上面的「远端地址」）', kind: 'unknown' }
+  }
+  return probeRemote({
+    url: config.remote,
+    ...config.token === undefined ? {} : { token: config.token },
+    ...config.proxy === undefined ? {} : { proxy: config.proxy },
+  })
+}
+
 
 export type { ImportConflict }

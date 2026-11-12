@@ -983,7 +983,7 @@ interface ConfigFormLike {
     value?: {
       diary?: { enabled?: boolean }
       /** 连接目标：面板里可改，值写进 profile 的 patch。 */
-      sync?: { enabled?: boolean, remote?: string, mirrorDir?: string, branch?: string }
+      sync?: { enabled?: boolean, remote?: string, mirrorDir?: string, branch?: string, proxy?: string }
     }
   }
   subscribe(listener: () => void): unknown
@@ -1273,6 +1273,9 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
   const [remote, setRemote] = useState('')
   const [mirrorDir, setMirrorDir] = useState('')
   const [branch, setBranch] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [testNote, setTestNote] = useState('')
+  const [testing, setTesting] = useState(false)
   useEffect(() => {
     const read = (): void => {
       const value = form.getSnapshot()?.value
@@ -1281,6 +1284,7 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
       setRemote(value?.sync?.remote ?? '')
       setMirrorDir(value?.sync?.mirrorDir ?? '')
       setBranch(value?.sync?.branch ?? '')
+      setProxy(value?.sync?.proxy ?? '')
     }
     read()
     const off = form.subscribe(read)
@@ -1314,7 +1318,7 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
     }),
     createElement(SwitchRow, {
       label: '云同步',
-      hint: '把本机记忆备份到你自己的一个 git 仓库，几台电脑之间共用同一份记忆。关着时同步工具根本不会出现。打开后填上仓库地址和访问令牌即可；不知道填什么就留空——那只会在这台电脑上存一份镜像，不会传到任何地方。',
+      hint: '把本机记忆备份到你自己的一个 git 仓库，几台电脑之间共用同一份记忆。关着时同步工具根本不会出现。打开后填上仓库地址和访问令牌；访问 GitHub 需要代理的话把代理也填上，然后点「测试连接」确认通了。不知道填什么就留空——那只会在这台电脑上存一份镜像，不会传到任何地方。',
       enabled: sync,
       ariaLabel: '云同步开关',
       onToggle: () => write(['sync', 'enabled'], !sync, '云同步开关'),
@@ -1347,7 +1351,53 @@ function MemorySettingsCard(props: { form: ConfigFormLike }): ReactNode {
           placeholder: 'main',
           onCommit: next => write(['sync', 'branch'], next, '云同步分支'),
         }),
+        createElement(SyncField, {
+          label: '代理',
+          hint: '如果访问 GitHub 需要代理才填，例如 http://127.0.0.1:7897；不填就是直连。',
+          ariaLabel: '云同步代理',
+          value: proxy,
+          placeholder: 'http://127.0.0.1:7897（可选）',
+          onCommit: next => write(['sync', 'proxy'], next, '云同步代理'),
+        }),
         createElement(SyncTokenField),
+        createElement('div', { style: { display: 'flex', gap: 12, alignItems: 'center', padding: '2px 0 6px' } },
+          createElement('button', {
+            type: 'button',
+            'aria-label': '测试云同步连接',
+            disabled: testing,
+            onClick: () => {
+              setTesting(true)
+              setTestNote('测试中…')
+              void api('syncTest', {})
+                .then((value) => {
+                  const result = value as { ok?: boolean, error?: string, kind?: string, branches?: string[] }
+                  if (result.ok === true) {
+                    setTestNote(`连上了，远端有 ${result.branches?.length ?? 0} 个分支`)
+                    return
+                  }
+                  const reason = result.kind === 'auth'
+                    ? '认证失败：令牌不对或没有这个仓库的权限'
+                    : result.kind === 'network'
+                      ? '连不上：检查网络，需要代理的话填上面的代理地址'
+                      : '连接失败'
+                  setTestNote(`${reason}${result.error === undefined ? '' : `（${result.error}）`}`)
+                })
+                .catch((error: unknown) => { setTestNote(`测试失败：${String(error)}`) })
+                .finally(() => { setTesting(false) })
+            },
+            style: {
+              padding: '5px 12px', fontSize: 11.5, cursor: testing ? 'default' : 'pointer',
+              borderRadius: 7, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.3))',
+              background: testing ? 'transparent' : 'rgba(127, 127, 127, 0.07)',
+              color: 'var(--dsw-alias-label-primary, #d8e0ea)',
+            },
+          }, testing ? '测试中…' : '测试连接'),
+          testNote === ''
+            ? null
+            : createElement('span', {
+              style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)' },
+            }, testNote),
+        ),
         createElement(SyncGuide),
         createElement('div', {
           style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary, #67748a)', lineHeight: 1.5, marginTop: 2 },

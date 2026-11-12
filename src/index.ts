@@ -22,6 +22,7 @@ import { mountMemoryApi } from './routes.ts'
 import { buildSelfDescription } from './self.ts'
 import { appendEntry, diaryDir, lastWriteAt, pointerLine, readDay, recentDates } from './diary.ts'
 import { readSyncTokenFile } from './sync-token.ts'
+import { resolveProxy } from './sync-http.ts'
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
 
@@ -83,6 +84,12 @@ export const Config = z.object({
     remote: z.string().default(''),
     branch: z.string().default('main'),
     envName: z.string().default(''),
+    /**
+     * 代理地址（2026-11-13）。node 的 HTTP 不读 `HTTPS_PROXY`，在必须走代理才能访问
+     * GitHub 的网络里，push / pull 会一路超时（用户机器实测：系统 git 通、插件超时）。
+     * 留空则回退到环境变量，再没有就直连（见 sync-http.ts）。
+     */
+    proxy: z.string().default(''),
   }).default({ enabled: false }).volatile(),
   /**
    * 日记开关。默认开——这是**功能默认，不是采集默认**。
@@ -183,12 +190,15 @@ export function resolveSyncConfig(
   // 环境变量优先于面板设的文件 token：前者是调用方显式注入的那一层。
   const fromEnv = env.DSH_MEMORY_SYNC_TOKEN
   const token = fromEnv !== undefined && fromEnv !== '' ? fromEnv : fileToken
+  // 代理：`sync.proxy` 配置 > HTTPS_PROXY/HTTP_PROXY 环境变量（见 sync-http.ts）。
+  const proxy = resolveProxy(raw.proxy, env)
   return {
     mirrorDir,
     ...typeof raw.remote === 'string' && raw.remote !== '' ? { remote: raw.remote } : {},
     ...typeof raw.branch === 'string' && raw.branch !== '' ? { branch: raw.branch } : {},
     ...typeof raw.envName === 'string' && raw.envName !== '' ? { envName: raw.envName } : {},
     ...token === undefined || token === '' ? {} : { token },
+    ...proxy === undefined ? {} : { proxy },
   }
 }
 
@@ -668,8 +678,12 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   registeredToolNames.length = 0
   await ctx.plugin(MemoryEngine, config)
   await ctx.plugin(MemoryGateway)
+  // 云同步的运行时配置：面板的「测试连接」也要用它，所以定义在挂 API 之前。
+  // 缺省不启用：没打开 `memory.sync.enabled` 时那两个工具根本不注册（见下面的
+  // `syncEnabled`）；打开之后配置才可能不全——`remote` 为空就只做本地提交。
+  const syncConfig = (): SyncConfig => resolveSyncConfig(syncSettings(config), process.env, readSyncTokenFile())
   // 0.3.6：自带面板数据通道（HTTP，独立包无需 Typert 构建产物）
-  mountMemoryApi(ctx)
+  mountMemoryApi(ctx, syncConfig)
   const memory = ctx.get('memory')
   if (memory === undefined) throw new Error('memory engine failed to register')
 
@@ -1200,8 +1214,6 @@ export async function apply(ctx: Context, config?: MemoryConfig): Promise<void> 
   // 出错难排查，也容易越权。
   // 缺省不启用：没打开 `memory.sync.enabled` 时这两个工具根本不注册（见上面的
   // `syncEnabled`）；打开之后配置才可能不全——`remote` 为空就只做本地提交。
-  const syncConfig = (): SyncConfig => resolveSyncConfig(syncSettings(config), process.env, readSyncTokenFile())
-
   if (syncEnabled) {
   ctx.tools.register(defineTool({
     name: registered('memory_sync'),
