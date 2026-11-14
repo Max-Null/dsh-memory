@@ -64,16 +64,48 @@ describe('sync writer', () => {
     expect(readFileSync(join(dir, 'records/global/a.json'), 'utf8')).toBe('{"v":2}\n')
   })
 
-  it('磁盘上多出来的记录被删掉（删除先算差集）', () => {
+  it('磁盘上多出来的记录默认保留（2026-11-14 改：不再按差集删）', () => {
     const dir = join(tempRoot(), 'mirror')
     writeMirror({ targetDir: dir, files: [record('a'), record('b'), record('c')] })
 
+    // 本端这次只收集到 a、c——b 可能是另一端的记录，不能删。
     const run = writeMirror({ targetDir: dir, files: [record('a'), record('c')] })
+
+    expect(run.removed).toBe(0)
+    expect(existsSync(join(dir, 'records/global/b.json'))).toBe(true)
+    expect(existsSync(join(dir, 'records/global/a.json'))).toBe(true)
+  })
+
+  it('只有显式列在 remove 里的才删（本端确认删除的记录）', () => {
+    const dir = join(tempRoot(), 'mirror')
+    writeMirror({ targetDir: dir, files: [record('a'), record('b'), record('c')] })
+
+    const run = writeMirror({
+      targetDir: dir,
+      files: [record('a'), record('c')],
+      remove: ['records/global/b.json'],
+    })
 
     expect(run.removed).toBe(1)
     expect(run.removedPaths).toEqual(['records/global/b.json'])
     expect(existsSync(join(dir, 'records/global/b.json'))).toBe(false)
     expect(existsSync(join(dir, 'records/global/a.json'))).toBe(true)
+  })
+
+  it('remove 里越出 records/ 的路径一律忽略', () => {
+    const dir = join(tempRoot(), 'mirror')
+    mkdirSync(join(dir, 'conflicts'), { recursive: true })
+    writeFileSync(join(dir, 'conflicts/keep.json'), '{"left":1}\n', 'utf8')
+    writeMirror({ targetDir: dir, files: [record('a')] })
+
+    const run = writeMirror({
+      targetDir: dir,
+      files: [record('a')],
+      remove: ['../evil.txt', 'conflicts/keep.json', '.sync-state.json'],
+    })
+
+    expect(run.removed).toBe(0)
+    expect(existsSync(join(dir, 'conflicts/keep.json'))).toBe(true)
   })
 
   it('不碰 conflicts/ 与 index.json —— 它们不归写盘层管', () => {

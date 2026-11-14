@@ -1860,6 +1860,17 @@ export class MemoryEngine extends Service {
     }
   }
 
+  /**
+   * 按 id 取一条记录的原始块（2026-11-14，同步层用）。
+   *
+   * 返回 `Record<string, unknown>` 而不是内部 `StoredBlock`：调用方要把它塞进墓碑当快照，
+   * 需要的是可 JSON 序列化的普通对象，不该依赖内部块类型。不触发 `markUsed`——这不是检索。
+   */
+  async findBlock(id: string, projectCwd?: string): Promise<Record<string, unknown> | undefined> {
+    const found = await this.locateRecord(id as MemoryId, projectCwd)
+    return found === undefined ? undefined : { ...found.block }
+  }
+
   async setStatus(id: MemoryId, status: MemoryStatus, projectCwd?: string): Promise<MemoryRecord> {
     return this.writeScope(projectCwd, () => this.setStatusInner(id, status, projectCwd))
   }

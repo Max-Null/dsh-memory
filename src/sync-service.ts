@@ -20,7 +20,7 @@ import type { SyncRecordFile } from './sync-export.ts'
 import { commitMirror, readHistory } from './sync-git.ts'
 import { planImport } from './sync-import.ts'
 import type { ImportConflict, ImportedBlock, IncomingRecord } from './sync-import.ts'
-import { SYNC_STATE_FILE, TOMBSTONE_DIR, dropTombstoned, planTombstones } from './sync-tombstone.ts'
+import { TOMBSTONE_DIR, dropTombstoned, planTombstones, stateFileName } from './sync-tombstone.ts'
 import type { SyncState, Tombstone } from './sync-tombstone.ts'
 import { ensureMirrorRepo, ensureRemote, probeRemote, pullMirror, pushMirror } from './sync-remote.ts'
 import type { RemoteProbe } from './sync-remote.ts'
@@ -70,6 +70,8 @@ export interface SyncPullRun {
   readonly imported: number
   readonly conflicts: number
   readonly orphaned: number
+  /** 本次按墓碑删掉的本地记忆条数（2026-11-14）。 */
+  readonly deleted?: number
   readonly error?: string
   readonly errorKind?: 'auth' | 'network' | 'unknown'
 }
@@ -143,9 +145,13 @@ function stateOfFiles(files: readonly SyncRecordFile[]): SyncState {
   return { global, project }
 }
 
-/** 读上一次同步留下的状态；没有时返回 `undefined`（首次同步）。 */
-function readState(dir: string): SyncState | undefined {
-  const file = join(dir, SYNC_STATE_FILE)
+/**
+ * 读**本端**上一次同步留下的状态；没有时返回 `undefined`（视为首次）。
+ *
+ * 2026-11-14：按 `envName` 分片。旧单份文件不读——它记的是别端全集，当基线会误判删除。
+ */
+function readState(dir: string, envName?: string): SyncState | undefined {
+  const file = join(dir, stateFileName(envName))
   if (!existsSync(file)) return undefined
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<SyncState>
@@ -159,10 +165,10 @@ function readState(dir: string): SyncState | undefined {
   }
 }
 
-/** 写状态文件。 */
-function writeState(dir: string, state: SyncState): void {
+/** 写本端的分片状态。 */
+function writeState(dir: string, state: SyncState, envName?: string): void {
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, SYNC_STATE_FILE), `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+  writeFileSync(join(dir, stateFileName(envName)), `${JSON.stringify(state, null, 2)}\n`, 'utf8')
 }
 
 /** 把墓碑落成文件（`tombstones/<id>.json`）。 */
@@ -215,14 +221,32 @@ export async function syncPush(
   }
 
   const files = await collectMirror(memory)
-  const write = writeMirror({ targetDir: config.mirrorDir, files })
 
-  // 墓碑：用「上次状态」与「本次要写的 id」对比。首次同步没有上次状态 → 不产生墓碑。
-  const previous = readState(config.mirrorDir)
+  // 墓碑：用「**本端**上次状态」与「本次要写的 id」对比。首次同步没有本端状态 → 不产生墓碑。
+  // 单份 state 时代这里读的是别端全集，正是多端互删的判定根源（2026-11-14 修复）。
+  const previous = readState(config.mirrorDir, config.envName)
   const current = stateOfFiles(files)
-  const tombstones = planTombstones({ previous, current, at: now })
+  const base = planTombstones({ previous, current, at: now })
+
+  // 补 snapshot 与 env：pull 端消费墓碑前要能兜底，排查时要能看出是谁删的。
+  const tombstones: Tombstone[] = []
+  for (const tombstone of base) {
+    const record = await memory.findBlock(tombstone.id)
+    tombstones.push({
+      ...tombstone,
+      ...record === undefined ? {} : { snapshot: record },
+      ...config.envName === undefined ? {} : { env: config.envName },
+    })
+  }
+
+  // 本端**确认删除**的路径才从镜像里删——A：默认不删差集，不然会删掉别端的记录。
+  const remove = tombstones.map(tombstone => (tombstone.scope === 'global'
+    ? `records/global/${tombstone.id}.json`
+    : `records/project/${tombstone.projectName ?? ''}/${tombstone.id}.json`))
+
+  const write = writeMirror({ targetDir: config.mirrorDir, files, remove })
   writeTombstones(config.mirrorDir, tombstones)
-  writeState(config.mirrorDir, dropTombstoned(current, tombstones))
+  writeState(config.mirrorDir, dropTombstoned(current, tombstones), config.envName)
 
   const commit = await commitMirror({
     dir: config.mirrorDir,
@@ -396,12 +420,79 @@ export async function syncPull(
     }
   }
 
+  // 墓碑消费（2026-11-14）：别端明确删掉的记忆，本端也删掉——否则会出现
+  // 「我删了它又回来」。只删 id 精确匹配、且本端没在那之后改过的；删前留证据。
+  const deleted = await applyTombstones(memory, config)
+
   return {
     pulled: true,
     imported,
     conflicts: plan.conflicts.length,
     orphaned: plan.orphaned.length,
+    deleted,
   }
+}
+
+/** 读镜像里的墓碑（坏文件跳过——宁可少删，不可误删）。 */
+function readTombstones(mirrorDir: string): Tombstone[] {
+  const dir = join(mirrorDir, TOMBSTONE_DIR)
+  if (!existsSync(dir)) return []
+  const tombstones: Tombstone[] = []
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue
+    try {
+      tombstones.push(JSON.parse(readFileSync(join(dir, name), 'utf8')) as Tombstone)
+    } catch {
+      // 坏墓碑跳过。
+    }
+  }
+  return tombstones
+}
+
+/**
+ * 应用远端墓碑：把别端明确删掉的记忆在本端也删掉（2026-11-14）。
+ *
+ * 三条安全边界（设计 §二.C）：
+ * 1. 只删 **id 精确匹配** 的记录（记忆 id 是 uuid，不会撞）。
+ * 2. 本端 `updatedAt` **晚于** `deletedAt` 的不删——本端在那之后改过，旧删除不该覆盖它；
+ *    这类写进 `conflicts/deleted-<id>.json` 等人处理。
+ * 3. 删之前同样留一份证据（墓碑自带 snapshot，这里再留本地版本）。
+ *
+ * @param memory - 引擎实例。
+ * @param config - 同步配置。
+ * @returns 实际删掉的条数。
+ */
+async function applyTombstones(memory: MemoryEngine, config: SyncConfig): Promise<number> {
+  const tombstones = readTombstones(config.mirrorDir)
+  if (tombstones.length === 0) return 0
+  const backupDir = join(config.mirrorDir, 'conflicts')
+  let deleted = 0
+  for (const tombstone of tombstones) {
+    const block = await memory.findBlock(tombstone.id)
+    if (block === undefined) continue
+    const updatedAt = typeof block.updatedAt === 'number' ? block.updatedAt : 0
+    if (updatedAt > tombstone.deletedAt) {
+      mkdirSync(backupDir, { recursive: true })
+      writeFileSync(
+        join(backupDir, `deleted-${tombstone.id}.json`),
+        `${JSON.stringify({ tombstone, local: block }, null, 2)}\n`,
+        'utf8',
+      )
+      continue
+    }
+    const cwd = tombstone.scope === 'project' && tombstone.projectName !== undefined
+      ? memory.projectCwds().find(candidate =>
+        (candidate.replace(/\\/gu, '/').split('/').pop() ?? '').toLowerCase() === tombstone.projectName?.toLowerCase())
+      : undefined
+    // project 记录落不在地上（本端没这个项目）就跳过——它不是「被删了」，只是不在这台机器。
+    if (tombstone.scope === 'project' && cwd === undefined) continue
+    try {
+      if (await memory.forget(tombstone.id as MemoryId, cwd)) deleted += 1
+    } catch {
+      // 单条失败跳过，不挡整次拉取。
+    }
+  }
+  return deleted
 }
 
 /**

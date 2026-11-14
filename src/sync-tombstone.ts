@@ -32,6 +32,13 @@ export interface Tombstone {
   /** `project` 作用域下的项目名。 */
   readonly projectName?: string
   readonly deletedAt: number
+  /**
+   * 删除时的记录快照（2026-11-14）。pull 端消费墓碑前用它兜底，也方便人工恢复。
+   * 只在墓碑里，不进 `records/`。
+   */
+  readonly snapshot?: unknown
+  /** 哪个环境删的（2026-11-14）。只用于排查，不参与判定。 */
+  readonly env?: string
 }
 
 /** {@link planTombstones} 的入参。 */
@@ -46,6 +53,34 @@ export interface TombstonePlanOptions {
 
 /** 状态文件在同步仓库里的位置。 */
 export const SYNC_STATE_FILE = '.sync-state.json'
+
+/** 归一化端标识：小写、只留字母数字与 `-`、截断到 32 字符。 */
+export function sanitizeEnvName(envName?: string): string {
+  if (envName === undefined) return ''
+  return envName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/gu, '-')
+    .replace(/^-+/u, '')
+    .replace(/-+$/u, '')
+    .slice(0, 32)
+}
+
+/**
+ * 按端分片的状态文件名（2026-11-14）。
+ *
+ * 单份 `.sync-state.json` 记录的是「最后一次 push 那一端」的镜像全集——另一端读它，
+ * 就会把自己没有的 id 全判成「删除」，这正是多端互删的判定根源。分片后每端只读自己的。
+ *
+ * 旧的单份文件**不迁移**（设计 §四）：首次用分片时 `previous` 为空，正好走
+ * 「首次同步不产生墓碑」的保护，比把别端全集当自己的基线安全。
+ *
+ * @param envName - 端标识；缺省或清洗后为空时退回旧文件名（单端与测试仍可用）。
+ */
+export function stateFileName(envName?: string): string {
+  const safe = sanitizeEnvName(envName)
+  return safe === '' ? SYNC_STATE_FILE : `.sync-state.${safe}.json`
+}
 
 /** 状态文件的相对路径（含墓碑目录）。 */
 export const TOMBSTONE_DIR = 'tombstones'

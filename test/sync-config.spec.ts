@@ -22,7 +22,9 @@ describe('resolveSyncConfig', () => {
     expect(cfg.mirrorDir).toBe(join('H:/tmp/dsh-home', 'memory-sync'))
     expect('remote' in cfg).toBe(false)
     expect('branch' in cfg).toBe(false)
-    expect('envName' in cfg).toBe(false)
+    // envName 总有值（2026-11-14）：缺省用主机名，它是 state 分片的键
+    expect(typeof cfg.envName).toBe('string')
+    expect((cfg.envName ?? '').length).toBeGreaterThan(0)
     expect('token' in cfg).toBe(false)
   })
 
@@ -51,7 +53,7 @@ describe('resolveSyncConfig', () => {
     const cfg = resolveSyncConfig({ remote: '', branch: '', envName: '', mirrorDir: '' }, {})
     expect('remote' in cfg).toBe(false)
     expect('branch' in cfg).toBe(false)
-    expect('envName' in cfg).toBe(false)
+    expect((cfg.envName ?? '').length).toBeGreaterThan(0)
     expect(cfg.mirrorDir).toBe(join(homedir(), '.dsh', 'memory-sync'))
   })
 

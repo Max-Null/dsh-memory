@@ -5,7 +5,7 @@
  * model tools, a stable guidance section, and a recall context.
  */
 
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { join, dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -23,6 +23,7 @@ import { buildSelfDescription } from './self.ts'
 import { appendEntry, diaryDir, lastWriteAt, pointerLine, readDay, recentDates } from './diary.ts'
 import { readSyncTokenFile } from './sync-token.ts'
 import { resolveProxy } from './sync-http.ts'
+import { sanitizeEnvName } from './sync-tombstone.ts'
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_INJECTION_BUDGET, DEFAULT_SUMMARY_CHARS, candidateNotice, indexNotice, neighborNotice, neutralizeBraces, omittedNotice, renderInjection, staleNotice } from './injection.ts'
 
@@ -192,11 +193,21 @@ export function resolveSyncConfig(
   const token = fromEnv !== undefined && fromEnv !== '' ? fromEnv : fileToken
   // 代理：`sync.proxy` 配置 > HTTPS_PROXY/HTTP_PROXY 环境变量（见 sync-http.ts）。
   const proxy = resolveProxy(raw.proxy, env)
+  /**
+   * 端标识（2026-11-14）：缺省时用主机名。
+   *
+   * 它决定 `.sync-state.<env>.json` 的分片文件名——两端都用同一个名字就会共用
+   * 同一份状态，墓碑判定又会拿别端全集当基线（多端互删的根源）。主机名在同一网络里
+   * 天然不同；清洗后为空时退回 `local`。
+   */
+  const envName = typeof raw.envName === 'string' && raw.envName !== ''
+    ? raw.envName
+    : (sanitizeEnvName(hostname()) || 'local')
   return {
     mirrorDir,
+    envName,
     ...typeof raw.remote === 'string' && raw.remote !== '' ? { remote: raw.remote } : {},
     ...typeof raw.branch === 'string' && raw.branch !== '' ? { branch: raw.branch } : {},
-    ...typeof raw.envName === 'string' && raw.envName !== '' ? { envName: raw.envName } : {},
     ...token === undefined || token === '' ? {} : { token },
     ...proxy === undefined ? {} : { proxy },
   }

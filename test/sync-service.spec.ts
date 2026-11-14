@@ -13,7 +13,7 @@ import Storage from '@deepseek-ai/dsh-storage'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRegistry from '@deepseek-ai/dsh-tools'
 import * as plugin from '../src/index.ts'
-import { collectMirror, syncPush, syncStatus } from '../src/sync-service.ts'
+import { collectMirror, syncPull, syncPush, syncStatus } from '../src/sync-service.ts'
 import type { MemoryEngine } from '../src/engine.ts'
 
 const roots: string[] = []
@@ -140,5 +140,54 @@ describe('sync service（端到端，无远端）', () => {
     // 项目名统一小写（跨 Windows / WSL 对齐）
     expect(names).toEqual(['myproj'])
     await dispose()
+  })
+})
+
+/**
+ * 多端（2026-11-14）：两端共用一个镜像目录，模拟两个环境推同一个远端。
+ *
+ * 旧实现在这里会互删：后 push 的一端把「本机看不见的」记录全删掉。这两个用例
+ * 先红再改，是 A/B/C 三件改动的回归锁。
+ */
+describe('sync service（多端）', () => {
+  it('两端共用一个镜像时，后 push 的一端不删前端的记录', async () => {
+    const a = await setup()
+    const b = await setup()
+    await a.memory.remember({ content: 'A 端的一条记忆', keywords: ['a'] })
+    const mirror = tempRoot()
+    await syncPush(a.memory, { mirrorDir: mirror, envName: 'device-a' })
+    expect(readdirSync(join(mirror, 'records/global')).length).toBe(1)
+
+    await b.memory.remember({ content: 'B 端的一条记忆', keywords: ['b'] })
+    await syncPush(b.memory, { mirrorDir: mirror, envName: 'device-b' })
+
+    // A 的那条必须还在，加上 B 的，一共两条
+    expect(readdirSync(join(mirror, 'records/global')).length).toBe(2)
+    await a.dispose()
+    await b.dispose()
+  })
+
+  it('A 删掉的记忆，B pull 后本地也删掉（墓碑跨端生效）', async () => {
+    const a = await setup()
+    const b = await setup()
+    const record = await a.memory.remember({ content: '要被删掉的记忆', keywords: ['x'] })
+    const mirror = tempRoot()
+    await syncPush(a.memory, { mirrorDir: mirror, envName: 'device-a' })
+
+    // B 先拉到这条
+    const first = await syncPull(b.memory, { mirrorDir: mirror, envName: 'device-b' })
+    expect(first.imported).toBeGreaterThanOrEqual(1)
+    expect((await b.memory.list({})).some(item => item.id === record.id)).toBe(true)
+
+    // A 删掉再推：应该留下墓碑，并把镜像里的文件删掉（本端确认删除）
+    await a.memory.forget(record.id)
+    const pushed = await syncPush(a.memory, { mirrorDir: mirror, envName: 'device-a' })
+    expect(pushed.tombstones).toBeGreaterThanOrEqual(1)
+
+    // B 再拉：墓碑生效，本地删掉
+    await syncPull(b.memory, { mirrorDir: mirror, envName: 'device-b' })
+    expect((await b.memory.list({})).some(item => item.id === record.id)).toBe(false)
+    await a.dispose()
+    await b.dispose()
   })
 })
